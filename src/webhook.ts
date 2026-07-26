@@ -180,6 +180,17 @@ async function handleIncoming(
     for (const change of entry.changes) {
       if (change.field !== "messages") continue;
 
+      // PinkLime fork: in a multi-tenant fan-out (one Meta app webhook routed
+      // to many bot instances) the same payload may reach every instance.
+      // Only process events addressed to THIS instance's phone number.
+      const targetPnid = change.value?.metadata?.phone_number_id;
+      if (config.phoneNumberId && targetPnid && targetPnid !== config.phoneNumberId) {
+        log.debug?.(
+          `[whatsapp-cloud] Skipping event for other phone_number_id ${targetPnid}`
+        );
+        continue;
+      }
+
       const { messages, contacts, statuses, errors } = change.value;
 
       // Log errors
