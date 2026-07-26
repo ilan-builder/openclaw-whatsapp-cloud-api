@@ -11,6 +11,7 @@
 
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
+import { saveInboundMedia } from "./media.js";
 import { startWebhookServer } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
@@ -346,6 +347,23 @@ const whatsappCloudChannel = {
 
             if (message.quotedMessageId) {
               msgCtx.ReplyToId = message.quotedMessageId;
+            }
+
+            // PinkLime fork: download inbound media to a local file so the
+            // runtime's media tools run (voice transcription, image input).
+            if (message.media) {
+              const saved = await saveInboundMedia(config, message.media, message.messageId, log);
+              if (saved) {
+                msgCtx.MediaPath = saved.path;
+                msgCtx.MediaPaths = [saved.path];
+                msgCtx.MediaContentType = saved.mimeType;
+                msgCtx.MediaType = message.type;
+                msgCtx.NumMedia = "1";
+              } else {
+                log.warn(
+                  `[whatsapp-cloud] Media download failed for ${message.messageId} — dispatching text placeholder only`
+                );
+              }
             }
 
             // Dispatch via OpenClaw's reply system
