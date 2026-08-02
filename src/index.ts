@@ -313,6 +313,17 @@ const whatsappCloudChannel = {
         log.warn(`[whatsapp-cloud] ${warn}`);
       }
 
+      // PinkLime fork: a previous instance may still hold the port (the
+      // runtime restarts accounts); close it before binding again.
+      if (webhookServer) {
+        try {
+          webhookServer.close();
+        } catch {
+          // already closed
+        }
+        webhookServer = null;
+      }
+
       // Start the webhook HTTP server
       webhookServer = startWebhookServer(
         config,
@@ -416,6 +427,31 @@ const whatsappCloudChannel = {
           mode: "webhook",
         });
       }
+
+      // PinkLime fork: the runtime treats a resolved startAccount as "channel
+      // exited" and auto-restarts it (EADDRINUSE loop on the webhook port).
+      // Stay resident until the runtime aborts the account.
+      const signal: AbortSignal | undefined = ctx.abortSignal ?? ctx.signal;
+      await new Promise<void>((resolve) => {
+        const shutdown = () => {
+          if (webhookServer) {
+            try {
+              webhookServer.close();
+            } catch {
+              // already closed
+            }
+            webhookServer = null;
+          }
+          log.info?.("[whatsapp-cloud] Channel stopped");
+          resolve();
+        };
+        if (signal) {
+          if (signal.aborted) return shutdown();
+          signal.addEventListener("abort", shutdown, { once: true });
+        }
+        // No abort signal from this runtime version: never resolve — the
+        // webhook server IS the running channel; process exit tears it down.
+      });
     },
 
     logoutAccount: async ({ accountId, cfg }: { accountId: string; cfg: any }) => {
