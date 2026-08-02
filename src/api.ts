@@ -339,3 +339,42 @@ function splitMessage(text: string, maxLength: number): string[] {
 
   return chunks;
 }
+
+// ---------------------------------------------------------------------------
+// WhatsApp Flows (PinkLime fork)
+// ---------------------------------------------------------------------------
+
+import type { FlowConfig } from "./types.js";
+
+/** Send an interactive Flow message (native in-chat multi-screen form). */
+export async function sendFlow(
+  config: WhatsAppCloudConfig,
+  to: string,
+  flow: FlowConfig,
+  flowToken: string,
+  log: Logger
+): Promise<SendResult> {
+  const body = {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "flow",
+      body: { text: flow.bodyText ?? flow.cta },
+      action: {
+        name: "flow",
+        parameters: {
+          flow_message_version: "3",
+          flow_token: flowToken,
+          flow_id: flow.flowId,
+          flow_cta: flow.cta,
+          ...(flow.screen
+            ? { flow_action: "navigate", flow_action_payload: { screen: flow.screen } }
+            : {}),
+        },
+      },
+    },
+  };
+  return sendRequest(config, body as unknown as Record<string, unknown>, log);
+}

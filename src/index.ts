@@ -10,7 +10,9 @@
 // ---------------------------------------------------------------------------
 
 import type { Server } from "node:http";
-import { sendText, sendMedia, sendTypingIndicator } from "./api.js";
+import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
+import { mintFlowToken, verifyFlowToken } from "./crypto.js";
+import { extractDirectives } from "./directives.js";
 import { saveInboundMedia } from "./media.js";
 import { startWebhookServer } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
@@ -57,6 +59,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     dmPolicy: raw.dmPolicy ?? CONFIG_DEFAULTS.dmPolicy!,
     allowFrom: raw.allowFrom ?? CONFIG_DEFAULTS.allowFrom!,
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
+    flows: raw.flows ?? {},
   };
 }
 
@@ -70,6 +73,30 @@ function resolveAccount(cfg: any, accountId?: string | null): ResolvedWhatsAppCl
     config,
     tokenSource: config.accessToken ? "config" : "none",
   };
+}
+
+// PinkLime fork: deliver reply text honoring trailing directives (FLOW: <name>).
+async function deliverText(
+  config: WhatsAppCloudConfig,
+  to: string,
+  text: string,
+  log: Logger
+): Promise<{ ok: boolean; messageId?: string; error?: string } | null> {
+  const { text: clean, flows } = extractDirectives(text);
+  let result: { ok: boolean; messageId?: string; error?: string } | null = null;
+  if (clean) result = await sendText(config, to, clean, log);
+  for (const name of flows) {
+    const flow = config.flows?.[name];
+    if (!flow?.flowId) {
+      log.warn(`[whatsapp-cloud] Unknown flow "${name}" — directive dropped`);
+      continue;
+    }
+    const token = mintFlowToken({ f: name, p: to, t: Date.now() }, config.appSecret);
+    const fr = await sendFlow(config, to, flow, token, log);
+    if (!fr.ok) log.error(`[whatsapp-cloud] Flow send failed (${name}): ${fr.error}`);
+    result = result ?? fr;
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -235,15 +262,15 @@ const whatsappCloudChannel = {
         throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
       }
 
-      const result = await sendText(config, to, text, log);
+      const result = await deliverText(config, to, text, log);
 
-      if (!result.ok) {
+      if (result && !result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);
       }
 
       return {
         channel: "whatsapp-cloud" as any,
-        messageId: result.messageId ?? "unknown",
+        messageId: result?.messageId ?? "unknown",
         chatId: to,
       };
     },
@@ -360,6 +387,24 @@ const whatsappCloudChannel = {
               msgCtx.ReplyToId = message.quotedMessageId;
             }
 
+            // PinkLime fork: Flow completion → verified structured line.
+            if (message.flowReply) {
+              let parsed: Record<string, unknown> = {};
+              try { parsed = JSON.parse(message.flowReply.responseJson); } catch { /* keep {} */ }
+              const token = String(parsed.flow_token ?? "");
+              const ver = verifyFlowToken(token, config.appSecret);
+              if (!ver || ver.p !== message.from) {
+                log.warn(`[whatsapp-cloud] Flow completion with invalid/mismatched token from ${message.from} — dropped`);
+                return;
+              }
+              delete parsed.flow_token;
+              const structured = `[FLOW_RESPONSE ${ver.f}] ${JSON.stringify(parsed)}`;
+              msgCtx.Body = structured;
+              msgCtx.RawBody = structured;
+              msgCtx.CommandBody = structured;
+              msgCtx.BodyForCommands = structured;
+            }
+
             // PinkLime fork: download inbound media to a local file so the
             // runtime's media tools run (voice transcription, image input).
             if (message.media) {
@@ -384,7 +429,7 @@ const whatsappCloudChannel = {
               dispatcherOptions: {
                 deliver: async (payload: any) => {
                   if (payload.text) {
-                    await sendText(config, message.from, payload.text, log);
+                    await deliverText(config, message.from, payload.text, log);
                   }
                   if (payload.mediaUrl) {
                     await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);

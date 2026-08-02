@@ -43,6 +43,11 @@ export interface ParsedInboundMessage {
     title: string;
     type: "button_reply" | "list_reply";
   };
+  /** Flow completion (nfm_reply) — PinkLime fork */
+  flowReply?: {
+    /** raw response_json string from the Flow's complete action */
+    responseJson: string;
+  };
   /** If this is a reply to a previous message */
   quotedMessageId?: string;
 }
@@ -256,6 +261,7 @@ function processMessage(
     type: msg.type,
     media: parsed.media,
     interactiveReply: parsed.interactiveReply,
+    flowReply: parsed.flowReply,
     quotedMessageId: msg.context?.id,
   };
 
@@ -282,6 +288,7 @@ interface ExtractedContent {
   text: string;
   media?: ParsedInboundMessage["media"];
   interactiveReply?: ParsedInboundMessage["interactiveReply"];
+  flowReply?: ParsedInboundMessage["flowReply"];
 }
 
 function extractMessageContent(msg: WAMessage): ExtractedContent {
@@ -368,6 +375,14 @@ function extractMessageContent(msg: WAMessage): ExtractedContent {
             title: reply.list_reply.title,
             type: "list_reply",
           },
+        };
+      }
+      // PinkLime fork: WhatsApp Flow completion. The dispatcher turns this
+      // into a structured [FLOW_RESPONSE …] line after verifying the token.
+      if ((reply as any)?.type === "nfm_reply" && (reply as any).nfm_reply) {
+        return {
+          text: "[Flow response]",
+          flowReply: { responseJson: String((reply as any).nfm_reply.response_json ?? "{}") },
         };
       }
       return { text: "[Interactive message]" };

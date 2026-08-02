@@ -48,3 +48,34 @@ describe("verifyWebhookSignature", () => {
     expect(verifyWebhookSignature(body, sig, APP_SECRET)).toBe(true);
   });
 });
+
+// --- Flow tokens (PinkLime fork) ---
+import { mintFlowToken, verifyFlowToken } from "../crypto.js";
+
+describe("flow tokens", () => {
+  const SECRET = "test-app-secret";
+
+  it("round-trips a valid token", () => {
+    const token = mintFlowToken({ f: "netanya-booking", p: "972541234567", t: 1700000000000 }, SECRET);
+    const out = verifyFlowToken(token, SECRET);
+    expect(out).toEqual({ f: "netanya-booking", p: "972541234567", t: 1700000000000 });
+  });
+
+  it("rejects a tampered token", () => {
+    const token = mintFlowToken({ f: "netanya-booking", p: "972541234567", t: 1 }, SECRET);
+    // Forge the payload: swap in a different base64url body, keep the signature.
+    const [, sig] = token.split(".");
+    const forgedBody = Buffer.from(JSON.stringify({ f: "netanya-booking", p: "972000000000", t: 1 })).toString("base64url");
+    expect(verifyFlowToken(`${forgedBody}.${sig}`, SECRET)).toBeNull();
+  });
+
+  it("rejects a token signed with another secret", () => {
+    const token = mintFlowToken({ f: "x", p: "1", t: 1 }, "other-secret");
+    expect(verifyFlowToken(token, SECRET)).toBeNull();
+  });
+
+  it("rejects garbage", () => {
+    expect(verifyFlowToken("not-a-token", SECRET)).toBeNull();
+    expect(verifyFlowToken("", SECRET)).toBeNull();
+  });
+});

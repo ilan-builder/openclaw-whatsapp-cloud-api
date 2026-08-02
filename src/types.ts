@@ -3,6 +3,18 @@
 // ---------------------------------------------------------------------------
 
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
+/** A sendable WhatsApp Flow registered for this account (PinkLime fork). */
+export interface FlowConfig {
+  /** Meta Flow id (from WABA /flows) */
+  flowId: string;
+  /** CTA button label shown on the flow message */
+  cta: string;
+  /** Message body text above the CTA */
+  bodyText?: string;
+  /** First screen id (default: the Flow's own entry screen) */
+  screen?: string;
+}
+
 export interface WhatsAppCloudConfig {
   enabled: boolean;
   phoneNumberId: string;
@@ -16,6 +28,8 @@ export interface WhatsAppCloudConfig {
   dmPolicy: "open" | "allowlist";
   allowFrom: string[];
   sendReadReceipts: boolean;
+  /** Named flows sendable via the "FLOW: <name>" reply directive (PinkLime fork). */
+  flows: Record<string, FlowConfig>;
 }
 
 /** Defaults applied when config values are missing */
