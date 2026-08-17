@@ -41,6 +41,44 @@ let webhookServer: Server | null = null;
 const DEFAULT_ACCOUNT_ID = "default";
 
 // ---------------------------------------------------------------------------
+// Session key construction
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the id of the default agent from a loaded OpenClaw config.
+ * Falls back to "main", which is the runtime's own default agent id.
+ */
+export function resolveDefaultAgentId(cfg: any): string {
+  const list = cfg?.agents?.list;
+  if (Array.isArray(list)) {
+    const def = list.find((a: any) => a?.default);
+    if (def?.id) return String(def.id);
+    if (list[0]?.id) return String(list[0].id);
+  }
+  return "main";
+}
+
+/**
+ * Build the FULLY canonical session key for an inbound direct message.
+ *
+ * The gateway's `resolveSessionKey()` uses a ctx-provided `SessionKey`
+ * verbatim — it does NOT add the `agent:<id>:` prefix on the inbound path.
+ * Anything the store canonicalises later (outbound agent calls, session
+ * lookups) uses `agent:<defaultAgentId>:<key>`. Supplying the bare key
+ * therefore twins every chat into two sessions:
+ *
+ *   agent:main:whatsapp-cloud:direct:<peer>   (canonical — outbound writes here)
+ *   whatsapp-cloud:direct:<peer>              (bare — inbound turns ran here)
+ *
+ * Each inbound message could land in a session with no history, so the agent
+ * re-greeted the visitor. Emit the canonical form up front so both paths
+ * address one session.
+ */
+export function buildInboundSessionKey(cfg: any, peer: string): string {
+  return `agent:${resolveDefaultAgentId(cfg)}:whatsapp-cloud:direct:${peer}`;
+}
+
+// ---------------------------------------------------------------------------
 // Config resolution
 // ---------------------------------------------------------------------------
 
@@ -371,14 +409,12 @@ const whatsappCloudChannel = {
               BodyForCommands: message.text,
               From: message.from,
               To: config.phoneNumberId,
-              // OpenClaw session keys are "<channel>:<chatType>:<peer>" — the core WhatsApp
-              // plugin's group form is `whatsapp:group:${id}`, and the gateway prefixes the
-              // agent itself ("agent:<id>:…"). Dropping the chatType segment produced a key the
-              // gateway could not canonicalise, so inbound chats lived under a bare
-              // "whatsapp-cloud:<peer>" that NO outbound agent call could ever address: every
-              // agent-initiated message (booking confirmations) canonicalised to
-              // "agent:<id>:whatsapp-cloud:<peer>" and landed in a parallel, empty thread.
-              SessionKey: `whatsapp-cloud:direct:${message.from}`,
+              // OpenClaw session keys are "agent:<agentId>:<channel>:<chatType>:<peer>".
+              // The gateway does NOT prefix a ctx-provided SessionKey on the inbound path —
+              // it uses it verbatim — while the store canonicalises everything else to the
+              // "agent:<id>:…" form. Emit the fully canonical key so inbound turns and
+              // outbound agent calls share one session. See buildInboundSessionKey().
+              SessionKey: buildInboundSessionKey(freshCfg, message.from),
               AccountId: account.accountId,
               MessageSid: message.messageId,
               ChatType: "direct",
