@@ -7,11 +7,12 @@
 // the binary, which leaves voice notes as "[🎵 Audio message]" placeholders.
 // ---------------------------------------------------------------------------
 
-import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { getMediaUrl, downloadMedia } from "./api.js";
-import type { WhatsAppCloudConfig, Logger } from "./types.js";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { getMediaUrl, downloadMedia, sendMedia, uploadMedia } from "./api.js";
+import type { WhatsAppCloudConfig, SendResult, Logger } from "./types.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 
 const MEDIA_DIR = join(tmpdir(), "openclaw-wa-cloud-media");
@@ -94,4 +95,121 @@ export async function saveInboundMedia(
     `[whatsapp-cloud] Media saved: ${path} (${mimeType}, ${downloaded.buffer.length} bytes)`
   );
   return { path, mimeType };
+}
+
+// ---------------------------------------------------------------------------
+// Outbound media — local files must be uploaded before they can be sent.
+//
+// PinkLime fork addition: the outbound adapter used to pass whatever string it
+// received straight into `image.link`. A local path such as
+// /home/node/.openclaw/workspace/product-images/dish.jpg made Meta answer
+// "(#100) Param image.link is not a valid URI" and the send failed. Local files
+// now go to the /{phone-number-id}/media endpoint and are sent by media id.
+// ---------------------------------------------------------------------------
+
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  webp: "image/webp",
+  gif: "image/gif",
+  mp4: "video/mp4",
+  "3gp": "video/3gpp",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  amr: "audio/amr",
+  pdf: "application/pdf",
+};
+
+export type OutboundMediaType = "image" | "audio" | "video" | "document";
+
+export function mimeForFileName(fileName: string): string {
+  const ext = fileName.split(".").pop()?.toLowerCase();
+  return (ext && MIME_BY_EXT[ext]) || "application/octet-stream";
+}
+
+export function mediaTypeForMime(mimeType: string): OutboundMediaType {
+  const base = mimeType.split(";")[0].trim().toLowerCase();
+  if (base.startsWith("image/")) return "image";
+  if (base.startsWith("video/")) return "video";
+  if (base.startsWith("audio/")) return "audio";
+  return "document";
+}
+
+/** True when the string is already a URL Meta can fetch by itself. */
+export function isRemoteMediaUrl(source: string): boolean {
+  return /^https?:\/\//i.test(source.trim());
+}
+
+/**
+ * Turn whatever the runtime handed us into a local filesystem path.
+ * Accepts absolute paths, file:// URLs and ~-relative paths. `~` is expanded
+ * here because OpenClaw renders paths in that form and a model may copy it.
+ */
+export function resolveLocalMediaPath(source: string): string {
+  const trimmed = source.trim();
+  if (trimmed.startsWith("file://")) return fileURLToPath(trimmed);
+  if (trimmed === "~") return homedir();
+  if (trimmed.startsWith("~/")) return join(homedir(), trimmed.slice(2));
+  return isAbsolute(trimmed) ? trimmed : resolve(trimmed);
+}
+
+/**
+ * Send media that may be either a public URL or a local file.
+ *
+ * Remote URLs keep the cheap `link` path. Local files are read, uploaded to
+ * Meta's media store, then sent by id.
+ */
+export async function sendOutboundMedia(
+  config: WhatsAppCloudConfig,
+  to: string,
+  source: string,
+  caption: string | undefined,
+  log: Logger
+): Promise<SendResult> {
+  if (isRemoteMediaUrl(source)) {
+    const mimeType = mimeForFileName(source.split("?")[0]);
+    return sendMedia(
+      config,
+      to,
+      mediaTypeForMime(mimeType),
+      { link: source.trim(), caption: caption || undefined },
+      log
+    );
+  }
+
+  const path = resolveLocalMediaPath(source);
+  const fileName = basename(path);
+  const mimeType = mimeForFileName(fileName);
+  const mediaType = mediaTypeForMime(mimeType);
+
+  let data: Uint8Array;
+  try {
+    data = await readFile(path);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    log.error(`[whatsapp-cloud] Cannot read local media ${path}: ${reason}`);
+    return { ok: false, error: `local media file unreadable: ${path}` };
+  }
+
+  const uploaded = await uploadMedia(config, { data, fileName, mimeType }, log);
+  if (!uploaded.ok || !uploaded.mediaId) {
+    return { ok: false, error: uploaded.error ?? "media upload failed" };
+  }
+
+  return sendMedia(
+    config,
+    to,
+    mediaType,
+    {
+      id: uploaded.mediaId,
+      // Only image, video and document carry a caption; audio does not.
+      ...(mediaType === "audio" ? {} : { caption: caption || undefined }),
+      ...(mediaType === "document" ? { filename: fileName } : {}),
+    },
+    log
+  );
 }

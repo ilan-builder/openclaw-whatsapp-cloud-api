@@ -265,3 +265,9 @@ export interface SendResult {
   messageId?: string;
   error?: string;
 }
+
+export interface UploadResult {
+  ok: boolean;
+  mediaId?: string;
+  error?: string;
+}

@@ -15,6 +15,7 @@ import type {
   TemplateComponent,
   MediaUrlResponse,
   ApiErrorResponse,
+  UploadResult,
   Logger,
 } from "./types.js";
 
@@ -192,6 +193,62 @@ export async function sendMedia(
     [mediaType]: media,
   };
   return sendRequest(config, body as unknown as Record<string, unknown>, log);
+}
+
+/**
+ * Upload a local file to Meta's media store and return its media id.
+ *
+ * The Cloud API only accepts `link` for media that is already reachable over
+ * public HTTPS. Anything on the local filesystem must be uploaded to
+ * `/{phone-number-id}/media` first and then referenced by `id`.
+ */
+export async function uploadMedia(
+  config: WhatsAppCloudConfig,
+  file: { data: Uint8Array; fileName: string; mimeType: string },
+  log: Logger
+): Promise<UploadResult> {
+  const url = apiUrl(config, `${config.phoneNumberId}/media`);
+
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", file.mimeType);
+  form.append(
+    "file",
+    new Blob([file.data as unknown as BlobPart], { type: file.mimeType }),
+    file.fileName
+  );
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      // Do not set Content-Type — fetch adds the multipart boundary itself.
+      headers: { Authorization: `Bearer ${config.accessToken}` },
+      body: form,
+    });
+
+    if (!response.ok) {
+      const err = (await response.json().catch(() => ({}))) as ApiErrorResponse;
+      const errorMsg =
+        err?.error?.message ?? `HTTP ${response.status} ${response.statusText}`;
+      log.error(`[whatsapp-cloud] Media upload failed: ${errorMsg}`);
+      return { ok: false, error: errorMsg };
+    }
+
+    const data = (await response.json()) as { id?: string };
+    if (!data?.id) {
+      log.error("[whatsapp-cloud] Media upload returned no media id");
+      return { ok: false, error: "media upload returned no id" };
+    }
+
+    log.info?.(
+      `[whatsapp-cloud] Media uploaded: ${file.fileName} (${file.mimeType}, ${file.data.length} bytes) → id ${data.id}`
+    );
+    return { ok: true, mediaId: data.id };
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    log.error(`[whatsapp-cloud] Media upload failed: ${errorMsg}`);
+    return { ok: false, error: errorMsg };
+  }
 }
 
 // ---------------------------------------------------------------------------

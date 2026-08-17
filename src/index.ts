@@ -13,7 +13,7 @@ import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
 import { mintFlowToken, verifyFlowToken } from "./crypto.js";
 import { extractDirectives } from "./directives.js";
-import { saveInboundMedia } from "./media.js";
+import { saveInboundMedia, sendOutboundMedia } from "./media.js";
 import { startWebhookServer } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
@@ -328,7 +328,7 @@ const whatsappCloudChannel = {
       }
 
       if (mediaUrl) {
-        const result = await sendMedia(config, to, "image", { link: mediaUrl, caption: text || undefined }, log);
+        const result = await sendOutboundMedia(config, to, mediaUrl, text || undefined, log);
         if (!result.ok) {
           throw new Error(`WhatsApp Cloud API media send failed: ${result.error}`);
         }
@@ -475,11 +475,17 @@ const whatsappCloudChannel = {
                     await deliverText(config, message.from, payload.text, log);
                   }
                   if (payload.mediaUrl) {
-                    await sendMedia(config, message.from, "image", { link: payload.mediaUrl }, log);
+                    const sent = await sendOutboundMedia(config, message.from, payload.mediaUrl, undefined, log);
+                    if (!sent.ok) {
+                      log.error(`[whatsapp-cloud] Media send failed (${payload.mediaUrl}): ${sent.error}`);
+                    }
                   }
                   if (payload.mediaUrls?.length) {
                     for (const url of payload.mediaUrls) {
-                      await sendMedia(config, message.from, "image", { link: url }, log);
+                      const sent = await sendOutboundMedia(config, message.from, url, undefined, log);
+                      if (!sent.ok) {
+                        log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
+                      }
                     }
                   }
                 },
