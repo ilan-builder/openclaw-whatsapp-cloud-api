@@ -371,7 +371,14 @@ const whatsappCloudChannel = {
               BodyForCommands: message.text,
               From: message.from,
               To: config.phoneNumberId,
-              SessionKey: `whatsapp-cloud:${message.from}`,
+              // OpenClaw session keys are "<channel>:<chatType>:<peer>" — the core WhatsApp
+              // plugin's group form is `whatsapp:group:${id}`, and the gateway prefixes the
+              // agent itself ("agent:<id>:…"). Dropping the chatType segment produced a key the
+              // gateway could not canonicalise, so inbound chats lived under a bare
+              // "whatsapp-cloud:<peer>" that NO outbound agent call could ever address: every
+              // agent-initiated message (booking confirmations) canonicalised to
+              // "agent:<id>:whatsapp-cloud:<peer>" and landed in a parallel, empty thread.
+              SessionKey: `whatsapp-cloud:direct:${message.from}`,
               AccountId: account.accountId,
               MessageSid: message.messageId,
               ChatType: "direct",
