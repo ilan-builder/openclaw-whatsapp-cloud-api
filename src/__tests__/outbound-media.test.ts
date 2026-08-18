@@ -10,6 +10,7 @@ vi.stubGlobal("fetch", mockFetch);
 import {
   isRemoteMediaUrl,
   mediaTypeForMime,
+  mediaUrlsFromPayload,
   mimeForFileName,
   resolveLocalMediaPath,
   sendOutboundMedia,
@@ -212,5 +213,36 @@ describe("sendOutboundMedia", () => {
       caption: "the menu",
       filename: "menu.pdf",
     });
+  });
+});
+
+describe("mediaUrlsFromPayload", () => {
+  const PHOTO = "/home/node/.openclaw/workspace/product-images/porcini-image-01.jpg";
+
+  // The regression this guards: a single MEDIA: line produces a payload with the
+  // SAME file in both fields, and sending each field in turn delivered the photo
+  // twice to the customer.
+  it("sends one photo once when both fields carry it", () => {
+    expect(mediaUrlsFromPayload({ mediaUrl: PHOTO, mediaUrls: [PHOTO] })).toEqual([PHOTO]);
+  });
+
+  it("keeps every distinct file when several are attached", () => {
+    const b = "/tmp/second.jpg";
+    expect(mediaUrlsFromPayload({ mediaUrl: PHOTO, mediaUrls: [PHOTO, b] })).toEqual([PHOTO, b]);
+  });
+
+  it("de-duplicates repeats inside the list", () => {
+    expect(mediaUrlsFromPayload({ mediaUrls: [PHOTO, PHOTO] })).toEqual([PHOTO]);
+  });
+
+  it("falls back to the single field when the list is absent or empty", () => {
+    expect(mediaUrlsFromPayload({ mediaUrl: PHOTO })).toEqual([PHOTO]);
+    expect(mediaUrlsFromPayload({ mediaUrl: PHOTO, mediaUrls: [] })).toEqual([PHOTO]);
+  });
+
+  it("returns nothing for a text-only payload", () => {
+    expect(mediaUrlsFromPayload({})).toEqual([]);
+    expect(mediaUrlsFromPayload({ mediaUrl: null, mediaUrls: null })).toEqual([]);
+    expect(mediaUrlsFromPayload({ mediaUrl: "   " })).toEqual([]);
   });
 });

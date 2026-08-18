@@ -13,7 +13,7 @@ import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
 import { mintFlowToken, verifyFlowToken } from "./crypto.js";
 import { extractDirectives } from "./directives.js";
-import { saveInboundMedia, sendOutboundMedia } from "./media.js";
+import { mediaUrlsFromPayload, saveInboundMedia, sendOutboundMedia } from "./media.js";
 import { startWebhookServer } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
@@ -474,18 +474,13 @@ const whatsappCloudChannel = {
                   if (payload.text) {
                     await deliverText(config, message.from, payload.text, log);
                   }
-                  if (payload.mediaUrl) {
-                    const sent = await sendOutboundMedia(config, message.from, payload.mediaUrl, undefined, log);
+                  // One de-duplicated list: the runtime sets mediaUrls AND
+                  // mediaUrl for a single attachment, and handling both fields
+                  // sent the same photo twice.
+                  for (const url of mediaUrlsFromPayload(payload)) {
+                    const sent = await sendOutboundMedia(config, message.from, url, undefined, log);
                     if (!sent.ok) {
-                      log.error(`[whatsapp-cloud] Media send failed (${payload.mediaUrl}): ${sent.error}`);
-                    }
-                  }
-                  if (payload.mediaUrls?.length) {
-                    for (const url of payload.mediaUrls) {
-                      const sent = await sendOutboundMedia(config, message.from, url, undefined, log);
-                      if (!sent.ok) {
-                        log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
-                      }
+                      log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
                     }
                   }
                 },

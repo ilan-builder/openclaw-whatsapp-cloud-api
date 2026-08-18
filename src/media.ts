@@ -149,6 +149,26 @@ export function isRemoteMediaUrl(source: string): boolean {
  * Accepts absolute paths, file:// URLs and ~-relative paths. `~` is expanded
  * here because OpenClaw renders paths in that form and a model may copy it.
  */
+/**
+ * Collapse a reply payload's media fields into one de-duplicated list.
+ *
+ * The runtime sets `mediaUrls` to the full list AND `mediaUrl` to its first
+ * entry, so a single attachment arrives in both fields. Handling each field in
+ * turn uploaded and delivered the same photo twice.
+ */
+export function mediaUrlsFromPayload(payload: {
+  mediaUrl?: string | null;
+  mediaUrls?: readonly string[] | null;
+}): string[] {
+  const list =
+    Array.isArray(payload?.mediaUrls) && payload.mediaUrls.length
+      ? payload.mediaUrls
+      : payload?.mediaUrl
+        ? [payload.mediaUrl]
+        : [];
+  return [...new Set(list.filter((u): u is string => typeof u === "string" && u.trim().length > 0))];
+}
+
 export function resolveLocalMediaPath(source: string): string {
   const trimmed = source.trim();
   if (trimmed.startsWith("file://")) return fileURLToPath(trimmed);
