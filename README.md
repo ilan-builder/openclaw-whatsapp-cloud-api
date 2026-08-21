@@ -380,6 +380,54 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 | `dmPolicy` | string | `"open"` | `"open"` (anyone) or `"allowlist"` (restricted) |
 | `allowFrom` | string[] | `[]` | E.164 numbers allowed when dmPolicy=allowlist |
 | `sendReadReceipts` | boolean | `true` | Auto-mark incoming messages as read |
+| `humanRhythm` | object | *off* | Reply pacing, see below (PinkLime fork) |
+
+### `humanRhythm` — reply like a person, not a bot
+
+A reply that lands three seconds after the customer's message reads as automated
+whatever it says. `humanRhythm` paces the outbound side:
+
+```
+read receipt (immediate)  ->  typing after a pause  ->  reply after minMs..maxMs
+```
+
+The wait is a **target total**, not an added delay: the model generates while the
+timer runs, so a reply that took 4s to write waits the remaining time only, and a
+reply that took 20s is sent the moment it is ready. A fresh random value is drawn
+per message, so no two waits look alike.
+
+It also turns a reply written as **two paragraphs** into two WhatsApp messages
+with a short gap, which is how a person texts. Single newlines are untouched, so
+a three-line reply stays one message.
+
+```json5
+{
+  channels: {
+    "whatsapp-cloud": {
+      humanRhythm: {
+        enabled: true,
+        minMs: 8000,
+        maxMs: 15000,
+      },
+    },
+  },
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Master switch. Off = the plugin behaves exactly as before |
+| `minMs` | number | `8000` | Lower bound of the target time from inbound message to first reply |
+| `maxMs` | number | `15000` | Upper bound of that target. Clamped up to `minMs` |
+| `typingAfterMs` | number | `2500` | Pause before the typing indicator appears (a person reads first) |
+| `splitParagraphs` | boolean | `true` | Send a blank-line-separated reply as separate messages |
+| `maxParts` | number | `3` | Hard cap on messages per reply; the tail is merged |
+| `partGapMinMs` | number | `2500` | Gap between those messages, lower bound |
+| `partGapMaxMs` | number | `5000` | Gap between those messages, upper bound |
+| `maxPartChars` | number | `400` | A paragraph longer than this is a long answer: never split |
+
+The typing indicator is refreshed every 20s while the pacer waits, because Meta
+drops it after 25s.
 
 ## Features
 

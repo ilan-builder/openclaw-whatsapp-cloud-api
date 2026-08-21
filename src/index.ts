@@ -19,6 +19,12 @@ import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
 import type { WhatsAppCloudConfig, Logger } from "./types.js";
 import { CONFIG_DEFAULTS } from "./types.js";
+import {
+  resolveHumanRhythm,
+  createReplyPacer,
+  splitIntoParts,
+  type ReplyPacer,
+} from "./human.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
@@ -98,6 +104,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     allowFrom: raw.allowFrom ?? CONFIG_DEFAULTS.allowFrom!,
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
     flows: raw.flows ?? {},
+    humanRhythm: resolveHumanRhythm(raw.humanRhythm),
   };
 }
 
@@ -118,17 +125,28 @@ async function deliverText(
   config: WhatsAppCloudConfig,
   to: string,
   text: string,
-  log: Logger
+  log: Logger,
+  pacer?: ReplyPacer
 ): Promise<{ ok: boolean; messageId?: string; error?: string } | null> {
   const { text: clean, flows } = extractDirectives(text);
   let result: { ok: boolean; messageId?: string; error?: string } | null = null;
-  if (clean) result = await sendText(config, to, clean, log);
+  if (clean) {
+    // One reply written as two paragraphs is two WhatsApp messages, sent with a
+    // gap, the way a person texts. Without a pacer it stays one message.
+    const parts = pacer ? splitIntoParts(clean, config.humanRhythm) : [clean];
+    for (const part of parts) {
+      await pacer?.beforeSend();
+      const sent = await sendText(config, to, part, log);
+      result = result ?? sent;
+    }
+  }
   for (const name of flows) {
     const flow = config.flows?.[name];
     if (!flow?.flowId) {
       log.warn(`[whatsapp-cloud] Unknown flow "${name}" — directive dropped`);
       continue;
     }
+    await pacer?.beforeSend();
     const token = mintFlowToken({ f: name, p: to, t: Date.now() }, config.appSecret);
     const fr = await sendFlow(config, to, flow, token, log);
     if (!fr.ok) log.error(`[whatsapp-cloud] Flow send failed (${name}): ${fr.error}`);
@@ -394,9 +412,17 @@ const whatsappCloudChannel = {
         config,
         // Inbound message handler — dispatch into OpenClaw agent session
         async (message) => {
-          try {
+          // Reply pacing (PinkLime fork). The clock starts here, when the customer
+          // pressed send, so the wait covers model generation instead of adding to it.
+          const rhythm = config.humanRhythm;
+          const pacer: ReplyPacer | undefined = rhythm.enabled
+            ? createReplyPacer({ config, rhythm, messageId: message.messageId, log })
+            : undefined;
+          if (!pacer) {
             // Show typing indicator immediately (auto-dismissed on reply or after 25s)
             sendTypingIndicator(config, message.messageId, log).catch(() => {});
+          }
+          try {
 
             // Load fresh config for dispatch
             const freshCfg = await runtime.config.loadConfig();
@@ -472,12 +498,13 @@ const whatsappCloudChannel = {
               dispatcherOptions: {
                 deliver: async (payload: any) => {
                   if (payload.text) {
-                    await deliverText(config, message.from, payload.text, log);
+                    await deliverText(config, message.from, payload.text, log, pacer);
                   }
                   // One de-duplicated list: the runtime sets mediaUrls AND
                   // mediaUrl for a single attachment, and handling both fields
                   // sent the same photo twice.
                   for (const url of mediaUrlsFromPayload(payload)) {
+                    await pacer?.beforeSend();
                     const sent = await sendOutboundMedia(config, message.from, url, undefined, log);
                     if (!sent.ok) {
                       log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
@@ -491,6 +518,8 @@ const whatsappCloudChannel = {
             });
           } catch (err) {
             log.error(`[whatsapp-cloud] Failed to dispatch inbound message: ${err}`);
+          } finally {
+            pacer?.stop();
           }
         },
         // Status update handler

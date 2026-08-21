@@ -2,6 +2,8 @@
 // WhatsApp Cloud API — Type Definitions
 // ---------------------------------------------------------------------------
 
+import type { HumanRhythmConfig } from "./human.js";
+
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
 /** A sendable WhatsApp Flow registered for this account (PinkLime fork). */
 export interface FlowConfig {
@@ -30,6 +32,8 @@ export interface WhatsAppCloudConfig {
   sendReadReceipts: boolean;
   /** Named flows sendable via the "FLOW: <name>" reply directive (PinkLime fork). */
   flows: Record<string, FlowConfig>;
+  /** Reply pacing so the bot answers with the rhythm of a person (PinkLime fork). */
+  humanRhythm: HumanRhythmConfig;
 }
 
 /** Defaults applied when config values are missing */
