@@ -26,6 +26,19 @@ import {
   type ReplyPacer,
 } from "./human.js";
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
+import {
+  buildHistoryBody,
+  firstName,
+  firstReplyUsable,
+  isExpired,
+  maskPeer,
+  matchIndex,
+  readEntry,
+  renderFirstReply,
+  resolveFirstReply,
+  writeEntry,
+  type FirstReplyEntry,
+} from "./first-reply.js";
 
 // ---------------------------------------------------------------------------
 // Account resolution types
@@ -105,6 +118,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     sendReadReceipts: raw.sendReadReceipts ?? CONFIG_DEFAULTS.sendReadReceipts!,
     flows: raw.flows ?? {},
     humanRhythm: resolveHumanRhythm(raw.humanRhythm),
+    firstReply: resolveFirstReply(raw.firstReply),
   };
 }
 
@@ -426,11 +440,84 @@ const whatsappCloudChannel = {
 
             // Load fresh config for dispatch
             const freshCfg = await runtime.config.loadConfig();
+            const sessionKey = buildInboundSessionKey(freshCfg, message.from);
+
+            // ---------------------------------------------------------------
+            // Canned first reply (PinkLime fork)
+            //
+            // The known ad opener is answered without the model, and the model
+            // is called only from the customer's SECOND message — with the two
+            // earlier messages replayed into the body, so the agent continues
+            // instead of greeting a second time. See first-reply.ts.
+            // ---------------------------------------------------------------
+            let historyBody: string | null = null;
+            const fr = config.firstReply;
+            const plainText =
+              message.type === "text" &&
+              !message.media &&
+              !message.flowReply &&
+              !message.interactiveReply;
+            if (firstReplyUsable(fr) && plainText) {
+              const existing = await readEntry(fr, message.from);
+              const stale = existing ? isExpired(existing, fr.cooldownDays) : true;
+              if (existing && !stale && existing.continuedAt === null) {
+                // They came back. Replay the canned exchange into this turn and
+                // mark the entry, so it is replayed exactly once.
+                historyBody = buildHistoryBody(existing, message.text, fr.historyPreamble);
+                const sinceMs = Date.now() - Date.parse(existing.reply?.ts ?? "");
+                const since = Number.isFinite(sinceMs) ? Math.round(sinceMs / 1000) : -1;
+                try {
+                  await writeEntry(fr, { ...existing, continuedAt: new Date().toISOString() });
+                } catch (err) {
+                  log.error(`[first-reply] state write failed for ${maskPeer(message.from)}: ${err}`);
+                }
+                log.info(`[first-reply] continued ${maskPeer(message.from)} after ${since}s`);
+              } else if (!existing || stale) {
+                const idx = matchIndex(message.text, fr.match);
+                if (idx >= 0) {
+                  const name = firstName(message.senderName);
+                  const text = renderFirstReply(fr, name);
+                  const sent = await deliverText(config, message.from, text, log, pacer);
+                  if (sent?.ok) {
+                    const inboundTs = Number(message.timestamp) * 1000;
+                    const entry: FirstReplyEntry = {
+                      peer: message.from,
+                      senderName: message.senderName ?? null,
+                      inbound: {
+                        text: message.text,
+                        ts: new Date(
+                          Number.isFinite(inboundTs) && inboundTs > 0 ? inboundTs : Date.now()
+                        ).toISOString(),
+                        waMessageId: message.messageId,
+                        ...(message.referral ? { referral: message.referral } : {}),
+                      },
+                      reply: { text, ts: new Date().toISOString(), waMessageId: sent.messageId },
+                      continuedAt: null,
+                      sessionKey,
+                    };
+                    try {
+                      await writeEntry(fr, entry);
+                    } catch (err) {
+                      log.error(`[first-reply] state write failed for ${maskPeer(message.from)}: ${err}`);
+                    }
+                    log.info(`[first-reply] sent to ${maskPeer(message.from)} match=${idx}`);
+                    return; // the model is never called for this message
+                  }
+                  // The canned send failed. Record nothing and let the model
+                  // answer, exactly as it did before this feature existed.
+                  log.error(
+                    `[first-reply] canned send failed for ${maskPeer(message.from)}: ${sent?.error ?? "no result"} — falling through to the model`
+                  );
+                }
+              }
+            }
 
             // Build MsgContext (OpenClaw's standard inbound message format)
             const msgCtx: Record<string, any> = {
-              Body: message.text,
-              RawBody: message.text,
+              // The replayed history rides on the BODY only. Command parsing keeps
+              // the bare text, so "/new" as a second message is still a command.
+              Body: historyBody ?? message.text,
+              RawBody: historyBody ?? message.text,
               CommandBody: message.text,
               BodyForCommands: message.text,
               From: message.from,
@@ -440,7 +527,7 @@ const whatsappCloudChannel = {
               // it uses it verbatim — while the store canonicalises everything else to the
               // "agent:<id>:…" form. Emit the fully canonical key so inbound turns and
               // outbound agent calls share one session. See buildInboundSessionKey().
-              SessionKey: buildInboundSessionKey(freshCfg, message.from),
+              SessionKey: sessionKey,
               AccountId: account.accountId,
               MessageSid: message.messageId,
               ChatType: "direct",

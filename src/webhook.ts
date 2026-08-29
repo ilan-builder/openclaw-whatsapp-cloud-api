@@ -9,6 +9,7 @@ import type {
   WhatsAppCloudConfig,
   WebhookPayload,
   IncomingMessage as WAMessage,
+  MessageReferral,
   WebhookContact,
   Logger,
 } from "./types.js";
@@ -50,6 +51,12 @@ export interface ParsedInboundMessage {
   };
   /** If this is a reply to a previous message */
   quotedMessageId?: string;
+  /**
+   * Click-to-WhatsApp ad attribution, present on the first message of a
+   * conversation started from an ad (PinkLime fork). Recorded for reporting;
+   * it never gates or changes any behaviour.
+   */
+  referral?: MessageReferral;
 }
 
 export type InboundMessageHandler = (message: ParsedInboundMessage) => void;
@@ -263,6 +270,7 @@ function processMessage(
     interactiveReply: parsed.interactiveReply,
     flowReply: parsed.flowReply,
     quotedMessageId: msg.context?.id,
+    referral: msg.referral,
   };
 
   log.info(
@@ -270,6 +278,17 @@ function processMessage(
       inbound.text.length > 100 ? "…" : ""
     }`
   );
+
+  // Click-to-WhatsApp attribution. Logged so we learn whether Meta actually
+  // populates it for our ads — nothing branches on it.
+  if (inbound.referral) {
+    const r = inbound.referral;
+    log.info(
+      `[whatsapp-cloud] Referral (click-to-WhatsApp) from ${msg.from}: ` +
+        `source_type=${r.source_type ?? "-"} source_id=${r.source_id ?? "-"} ` +
+        `ctwa_clid=${r.ctwa_clid ? "yes" : "no"} url=${r.source_url ?? "-"}`
+    );
+  }
 
   // Send read receipt
   if (config.sendReadReceipts) {

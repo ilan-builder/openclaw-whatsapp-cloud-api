@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { HumanRhythmConfig } from "./human.js";
+import type { FirstReplyConfig } from "./first-reply.js";
 
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
 /** A sendable WhatsApp Flow registered for this account (PinkLime fork). */
@@ -34,6 +35,8 @@ export interface WhatsAppCloudConfig {
   flows: Record<string, FlowConfig>;
   /** Reply pacing so the bot answers with the rhythm of a person (PinkLime fork). */
   humanRhythm: HumanRhythmConfig;
+  /** Canned, model-free answer to a known ad opener (PinkLime fork). */
+  firstReply: FirstReplyConfig;
 }
 
 /** Defaults applied when config values are missing */
@@ -108,6 +111,26 @@ export interface IncomingMessage {
     id: string;
     referred_product?: { catalog_id: string; product_retailer_id: string };
   };
+  /**
+   * Click-to-WhatsApp ad attribution (PinkLime fork). Meta attaches it to the
+   * FIRST message of a conversation started from an ad. It is recorded, never
+   * acted on — nothing in the reply path branches on it.
+   */
+  referral?: MessageReferral;
+}
+
+/** Meta's click-to-WhatsApp referral block (all fields optional in practice). */
+export interface MessageReferral {
+  source_url?: string;
+  source_id?: string;
+  source_type?: string;
+  headline?: string;
+  body?: string;
+  media_type?: string;
+  image_url?: string;
+  video_url?: string;
+  thumbnail_url?: string;
+  ctwa_clid?: string;
 }
 
 export type MessageType =
