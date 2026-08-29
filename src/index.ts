@@ -456,7 +456,10 @@ const whatsappCloudChannel = {
               message.type === "text" &&
               !message.media &&
               !message.flowReply &&
-              !message.interactiveReply;
+              !message.interactiveReply &&
+              // A slash command is not a conversation turn. It must reach the
+              // command parser untouched, and it must not spend the one replay.
+              !message.text.trimStart().startsWith("/");
             if (firstReplyUsable(fr) && plainText) {
               const existing = await readEntry(fr, message.from);
               const stale = existing ? isExpired(existing, fr.cooldownDays) : true;
@@ -514,12 +517,16 @@ const whatsappCloudChannel = {
 
             // Build MsgContext (OpenClaw's standard inbound message format)
             const msgCtx: Record<string, any> = {
-              // The replayed history rides on the BODY only. Command parsing keeps
-              // the bare text, so "/new" as a second message is still a command.
-              Body: historyBody ?? message.text,
-              RawBody: historyBody ?? message.text,
+              Body: message.text,
+              RawBody: message.text,
               CommandBody: message.text,
               BodyForCommands: message.text,
+              // The replayed history rides on BodyForAgent, which the runtime
+              // reads FIRST for the model's prompt (resolveAcpPromptText:
+              // BodyForAgent -> BodyForCommands -> CommandBody -> RawBody ->
+              // Body). Everything else keeps the bare text, so command parsing
+              // and the channel's own bookkeeping are untouched.
+              ...(historyBody ? { BodyForAgent: historyBody } : {}),
               From: message.from,
               To: config.phoneNumberId,
               // OpenClaw session keys are "agent:<agentId>:<channel>:<chatType>:<peer>".
