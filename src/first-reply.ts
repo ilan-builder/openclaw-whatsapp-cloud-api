@@ -91,9 +91,40 @@ export function resolveFirstReply(raw: any): FirstReplyConfig {
   };
 }
 
-/** A config that is switched on and actually has something to match and something to say. */
+/** Any text this config could actually send, ignoring whitespace-only strings. */
+export function firstReplyHasText(cfg: FirstReplyConfig): boolean {
+  return cfg.text.trim().length > 0 || cfg.textNoName.trim().length > 0;
+}
+
+/**
+ * A config that is switched on and actually has something to match and something
+ * to say.
+ *
+ * Since the base layer ships `enabled: true`, a client that never wrote its own
+ * texts resolves to "on, but with nothing to say". That must behave EXACTLY like
+ * off — never an empty WhatsApp message — so the emptiness is checked here and
+ * reported once at startup by `firstReplyStatus()`.
+ */
 export function firstReplyUsable(cfg: FirstReplyConfig): boolean {
-  return cfg.enabled && cfg.match.length > 0 && cfg.text.trim().length > 0;
+  return cfg.enabled && cfg.match.length > 0 && firstReplyHasText(cfg);
+}
+
+/**
+ * The ONE line the channel logs at startup, so an operator can tell a bot that
+ * answers the ad opener from one that only thinks it does.
+ */
+export function firstReplyStatus(cfg: FirstReplyConfig): { active: boolean; line: string } {
+  if (!cfg.enabled) return { active: false, line: "[first-reply] disabled" };
+  if (!firstReplyHasText(cfg)) {
+    return { active: false, line: "[first-reply] enabled but no text configured; inactive" };
+  }
+  if (cfg.match.length === 0) {
+    return { active: false, line: "[first-reply] enabled but no match openers configured; inactive" };
+  }
+  return {
+    active: true,
+    line: `[first-reply] ACTIVE — ${cfg.match.length} opener(s), cooldown ${cfg.cooldownDays}d`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +182,11 @@ export function firstName(senderName?: string | null): string | null {
 
 /** `{name}` → the first name (or ""), `{name_comma}` → " <name>," or ",". */
 export function renderFirstReply(cfg: FirstReplyConfig, name: string | null): string {
-  const template = name ? cfg.text : cfg.textNoName || cfg.text;
+  // Either text may be missing or whitespace-only; the other one then answers.
+  // An empty render is never sent — the caller falls through to the model.
+  const withName = cfg.text.trim() ? cfg.text : cfg.textNoName;
+  const withoutName = cfg.textNoName.trim() ? cfg.textNoName : cfg.text;
+  const template = name ? withName : withoutName;
   return template
     .replace(/\{name_comma\}/g, name ? ` ${name},` : ",")
     .replace(/\{name\}/g, name ?? "")

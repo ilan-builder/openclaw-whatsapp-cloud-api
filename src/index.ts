@@ -29,6 +29,7 @@ import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
 import {
   buildHistoryBody,
   firstName,
+  firstReplyStatus,
   firstReplyUsable,
   isExpired,
   maskPeer,
@@ -480,7 +481,17 @@ const whatsappCloudChannel = {
                 if (idx >= 0) {
                   const name = firstName(message.senderName);
                   const text = renderFirstReply(fr, name);
-                  const sent = await deliverText(config, message.from, text, log, pacer);
+                  // Belt and braces: firstReplyUsable() already refuses a config
+                  // with nothing to say. An empty WhatsApp message is worse than
+                  // no saving, so an empty render falls through to the model.
+                  const sent = text
+                    ? await deliverText(config, message.from, text, log, pacer)
+                    : null;
+                  if (!text) {
+                    log.warn(
+                      `[first-reply] rendered an empty reply for ${maskPeer(message.from)} — falling through to the model`
+                    );
+                  }
                   if (sent?.ok) {
                     const inboundTs = Number(message.timestamp) * 1000;
                     const entry: FirstReplyEntry = {
@@ -508,9 +519,11 @@ const whatsappCloudChannel = {
                   }
                   // The canned send failed. Record nothing and let the model
                   // answer, exactly as it did before this feature existed.
-                  log.error(
-                    `[first-reply] canned send failed for ${maskPeer(message.from)}: ${sent?.error ?? "no result"} — falling through to the model`
-                  );
+                  if (text) {
+                    log.error(
+                      `[first-reply] canned send failed for ${maskPeer(message.from)}: ${sent?.error ?? "no result"} — falling through to the model`
+                    );
+                  }
                 }
               }
             }
@@ -628,6 +641,13 @@ const whatsappCloudChannel = {
       log.info(`[whatsapp-cloud]   DM Policy: ${config.dmPolicy}`);
       if (config.dmPolicy === "allowlist") {
         log.info(`[whatsapp-cloud]   Allowed: ${config.allowFrom.join(", ") || "(none)"}`);
+      }
+      // ONE line, at startup: the base layer turns firstReply on for everyone,
+      // so "on but with no text" is a real state and must be visible here.
+      {
+        const status = firstReplyStatus(config.firstReply);
+        if (status.active) log.info(status.line);
+        else log.warn(status.line);
       }
 
       // Update runtime status

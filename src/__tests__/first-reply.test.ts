@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   buildHistoryBody,
   firstName,
+  firstReplyStatus,
   firstReplyUsable,
   isExpired,
   maskPeer,
@@ -39,6 +40,55 @@ describe("resolveFirstReply", () => {
   it("defaults textNoName to text and keeps an explicit one", () => {
     expect(resolveFirstReply({ text: "a" }).textNoName).toBe("a");
     expect(resolveFirstReply({ text: "a", textNoName: "b" }).textNoName).toBe("b");
+  });
+});
+
+// The base layer ships `enabled: true` for every agent, so "switched on with
+// nothing to say" is a normal state — a client that has not written its texts
+// yet. It must behave EXACTLY like off, and say so once at startup.
+describe("enabled but empty", () => {
+  it("is inactive when the text is empty or whitespace", () => {
+    expect(firstReplyUsable(resolveFirstReply({ enabled: true, match: [PREFILL], text: "" }))).toBe(
+      false
+    );
+    expect(
+      firstReplyUsable(
+        resolveFirstReply({ enabled: true, match: [PREFILL], text: "  \n\t ", textNoName: " " })
+      )
+    ).toBe(false);
+  });
+
+  it("is ACTIVE when only textNoName is configured", () => {
+    const cfg = resolveFirstReply({ enabled: true, match: [PREFILL], textNoName: "היי, בשמחה" });
+    expect(firstReplyUsable(cfg)).toBe(true);
+    expect(firstReplyStatus(cfg).active).toBe(true);
+  });
+
+  it("never renders an empty reply when one of the two texts is missing", () => {
+    const noText = resolveFirstReply({ enabled: true, match: [PREFILL], textNoName: "היי, בשמחה" });
+    expect(renderFirstReply(noText, "אילן")).toBe("היי, בשמחה");
+    const noNoName = resolveFirstReply({
+      enabled: true,
+      match: [PREFILL],
+      text: "היי{name_comma} בשמחה",
+      textNoName: "   ",
+    });
+    expect(renderFirstReply(noNoName, null)).toBe("היי, בשמחה");
+  });
+
+  it("reports one startup line per state", () => {
+    expect(firstReplyStatus(resolveFirstReply({ enabled: false })).line).toBe(
+      "[first-reply] disabled"
+    );
+    expect(firstReplyStatus(resolveFirstReply({ enabled: true, match: [PREFILL] })).line).toBe(
+      "[first-reply] enabled but no text configured; inactive"
+    );
+    expect(firstReplyStatus(resolveFirstReply({ enabled: true, text: "hi" })).line).toBe(
+      "[first-reply] enabled but no match openers configured; inactive"
+    );
+    const on = firstReplyStatus(resolveFirstReply({ enabled: true, match: [PREFILL], text: "hi" }));
+    expect(on.active).toBe(true);
+    expect(on.line).toBe("[first-reply] ACTIVE — 1 opener(s), cooldown 30d");
   });
 });
 
