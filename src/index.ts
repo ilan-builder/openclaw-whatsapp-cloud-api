@@ -40,6 +40,11 @@ import {
   writeEntry,
   type FirstReplyEntry,
 } from "./first-reply.js";
+import {
+  buildTakeoverBody,
+  claimHandback,
+  resolveHandback,
+} from "./handback.js";
 
 // ---------------------------------------------------------------------------
 // Account resolution types
@@ -120,6 +125,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     flows: raw.flows ?? {},
     humanRhythm: resolveHumanRhythm(raw.humanRhythm),
     firstReply: resolveFirstReply(raw.firstReply),
+    handback: resolveHandback(raw.handback),
   };
 }
 
@@ -525,6 +531,37 @@ const whatsappCloudChannel = {
                     );
                   }
                 }
+              }
+            }
+
+            // ---------------------------------------------------------------
+            // The hand-back replay (PinkLime fork)
+            //
+            // A human held this chat and handed it back. The container was given
+            // NOTHING while they held it, so the turns of the hold are replayed
+            // into this one prompt — otherwise the model answers the customer
+            // about a conversation it has no record of. See handback.ts.
+            //
+            // `plainText` is the same guard firstReply uses, and for the same two
+            // reasons: a slash command must reach the parser untouched, and it
+            // must not spend the one replay. A media message leaves the file in
+            // place for the next text message.
+            // ---------------------------------------------------------------
+            const hb = config.handback;
+            if (hb.enabled && plainText) {
+              const claim = await claimHandback(hb, message.from);
+              if (claim.malformed) {
+                log.warn(
+                  `[takeover] discarded a malformed hand-back file for ${maskPeer(message.from)} — the model was told nothing`
+                );
+              } else if (claim.entry) {
+                // Composes with the firstReply block when both are due: that one
+                // is older, so it stays in front (buildTakeoverBody).
+                historyBody = buildTakeoverBody(claim.entry, historyBody ?? message.text);
+                log.info(
+                  `[takeover] replayed ${claim.entry.turns.length} turn(s) of a hand-back to ${maskPeer(message.from)}` +
+                    (claim.entry.heldBy ? ` (held by ${claim.entry.heldBy})` : "")
+                );
               }
             }
 

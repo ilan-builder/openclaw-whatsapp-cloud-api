@@ -4,6 +4,7 @@
 
 import type { HumanRhythmConfig } from "./human.js";
 import type { FirstReplyConfig } from "./first-reply.js";
+import type { HandbackConfig } from "./handback.js";
 
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
 /** A sendable WhatsApp Flow registered for this account (PinkLime fork). */
@@ -37,6 +38,8 @@ export interface WhatsAppCloudConfig {
   humanRhythm: HumanRhythmConfig;
   /** Canned, model-free answer to a known ad opener (PinkLime fork). */
   firstReply: FirstReplyConfig;
+  /** Replay of a human takeover into the first message after the hand-back (PinkLime fork). */
+  handback: HandbackConfig;
 }
 
 /** Defaults applied when config values are missing */
