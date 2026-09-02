@@ -15,7 +15,7 @@
 // and never "contains": the same ad prefill also arrives with a real question
 // appended to it, and those must reach the model.
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -244,6 +244,54 @@ export async function writeEntry(cfg: FirstReplyConfig, entry: FirstReplyEntry):
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(tmp, `${JSON.stringify(entry, null, 2)}\n`, "utf-8");
   await rename(tmp, target);
+}
+
+/**
+ * Delete a peer's state, so the next matching opener is answered with the canned
+ * reply again. Returns true when a file was actually removed.
+ */
+export async function clearEntry(cfg: FirstReplyConfig, peer: string): Promise<boolean> {
+  try {
+    await unlink(join(cfg.stateDir, stateFileName(peer)));
+    return true;
+  } catch {
+    return false; // absent already — nothing to clear
+  }
+}
+
+// ---------------------------------------------------------------------------
+// A session reset makes the peer new again
+// ---------------------------------------------------------------------------
+//
+// `/new` means "start this conversation over", and the canned greeting is part
+// of the start. Without this the operator resets the session and the very next
+// "שלום" still goes to the model, which is what made the greeting impossible to
+// test on your own number inside the cooldown.
+
+const RESET_COMMANDS = new Set(["new", "reset"]);
+
+/** True for `/new` and `/reset` — the commands that clear the agent's session. */
+export function isSessionResetCommand(text: string): boolean {
+  const first = String(text ?? "").trim().split(/\s+/)[0] ?? "";
+  if (!first.startsWith("/")) return false;
+  return RESET_COMMANDS.has(first.slice(1).toLowerCase());
+}
+
+/**
+ * True when this peer may actually run commands, per `commands.allowFrom` on the
+ * loaded config — the same list the runtime authorizes with. The cooldown must
+ * reset only when the reset really happened, so a customer who types "/new" at a
+ * bot that ignores them is not greeted from scratch mid-conversation.
+ *
+ * An absent or empty list mirrors "not restricted here" and allows it.
+ */
+export function commandsAllowedFrom(cfg: any, peer: string, channel = "whatsapp-cloud"): boolean {
+  const raw = cfg?.commands?.allowFrom;
+  const list: unknown = Array.isArray(raw) ? raw : raw?.[channel];
+  if (!Array.isArray(list) || list.length === 0) return true;
+  const digits = (v: unknown) => String(v ?? "").replace(/[^0-9]/g, "");
+  const want = digits(peer);
+  return want.length > 0 && list.some((entry) => digits(entry) === want);
 }
 
 /** True when the entry is old enough that the peer counts as a new visitor again. */

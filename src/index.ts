@@ -28,10 +28,13 @@ import {
 import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
 import {
   buildHistoryBody,
+  clearEntry,
+  commandsAllowedFrom,
   firstName,
   firstReplyStatus,
   firstReplyUsable,
   isExpired,
+  isSessionResetCommand,
   maskPeer,
   matchIndex,
   readEntry,
@@ -448,6 +451,26 @@ const whatsappCloudChannel = {
             // Load fresh config for dispatch
             const freshCfg = await runtime.config.loadConfig();
             const sessionKey = buildInboundSessionKey(freshCfg, message.from);
+
+            // ---------------------------------------------------------------
+            // A session reset makes the peer new again (PinkLime fork)
+            //
+            // `/new` means "start this conversation over", and the canned
+            // greeting is part of the start. The command itself still goes
+            // through untouched — this only drops the state file, so the next
+            // matching opener is answered without the model again.
+            // ---------------------------------------------------------------
+            if (
+              message.type === "text" &&
+              config.firstReply.enabled &&
+              isSessionResetCommand(message.text) &&
+              commandsAllowedFrom(freshCfg, message.from)
+            ) {
+              const cleared = await clearEntry(config.firstReply, message.from);
+              if (cleared) {
+                log.info(`[first-reply] cleared ${maskPeer(message.from)} after a session reset`);
+              }
+            }
 
             // ---------------------------------------------------------------
             // Canned first reply (PinkLime fork)

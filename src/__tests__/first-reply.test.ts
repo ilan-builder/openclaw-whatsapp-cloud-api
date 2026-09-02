@@ -4,10 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildHistoryBody,
+  clearEntry,
+  commandsAllowedFrom,
   firstName,
   firstReplyStatus,
   firstReplyUsable,
   isExpired,
+  isSessionResetCommand,
   maskPeer,
   matchIndex,
   normalizeForMatch,
@@ -253,5 +256,79 @@ describe("maskPeer", () => {
   it("keeps the country prefix and the last two digits", () => {
     expect(maskPeer("972501234567")).toBe("9725******67");
     expect(maskPeer("12345")).toBe("12345");
+  });
+});
+
+describe("isSessionResetCommand", () => {
+  it("matches the commands that clear the session", () => {
+    expect(isSessionResetCommand("/new")).toBe(true);
+    expect(isSessionResetCommand("/reset")).toBe(true);
+    expect(isSessionResetCommand("  /New  ")).toBe(true);
+    expect(isSessionResetCommand("/new please")).toBe(true);
+  });
+
+  it("does not match a normal message or another command", () => {
+    expect(isSessionResetCommand("שלום")).toBe(false);
+    expect(isSessionResetCommand("/status")).toBe(false);
+    expect(isSessionResetCommand("new")).toBe(false);
+    // Not a prefix match: a word that merely starts with the command name.
+    expect(isSessionResetCommand("/newsletter")).toBe(false);
+    expect(isSessionResetCommand("")).toBe(false);
+  });
+});
+
+describe("commandsAllowedFrom", () => {
+  const cfg = { commands: { allowFrom: { "whatsapp-cloud": ["972543343052", "+972-50-721-6963"] } } };
+
+  it("allows a peer on the channel's list, in any format", () => {
+    expect(commandsAllowedFrom(cfg, "972543343052")).toBe(true);
+    expect(commandsAllowedFrom(cfg, "972507216963")).toBe(true);
+  });
+
+  it("refuses a peer that is not on it", () => {
+    expect(commandsAllowedFrom(cfg, "972501111111")).toBe(false);
+  });
+
+  it("reads the entry for THIS channel only", () => {
+    expect(commandsAllowedFrom({ commands: { allowFrom: { telegram: ["972543343052"] } } }, "1")).toBe(
+      true // no list for whatsapp-cloud — not restricted here
+    );
+  });
+
+  it("treats an absent or empty list as not restricted", () => {
+    expect(commandsAllowedFrom({}, "972543343052")).toBe(true);
+    expect(commandsAllowedFrom({ commands: { allowFrom: { "whatsapp-cloud": [] } } }, "9725")).toBe(true);
+  });
+});
+
+describe("clearEntry", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "first-reply-clear-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("removes the state so the peer counts as brand new again", async () => {
+    const cfg = resolveFirstReply({ stateDir: dir });
+    const entry: FirstReplyEntry = {
+      peer: "972507216963",
+      senderName: "שחר",
+      inbound: { text: "שלום", ts: "2026-09-02T07:24:11.000Z", waMessageId: "a" },
+      reply: { text: "היי שחר, אני שיר מדני וגלית 🌾", ts: "2026-09-02T07:24:17.000Z" },
+      continuedAt: "2026-09-02T07:25:00.000Z",
+      sessionKey: "k",
+    };
+    await writeEntry(cfg, entry);
+    expect(await readEntry(cfg, entry.peer)).not.toBeNull();
+
+    expect(await clearEntry(cfg, entry.peer)).toBe(true);
+    expect(await readEntry(cfg, entry.peer)).toBeNull();
+  });
+
+  it("is a no-op for a peer with no state", async () => {
+    const cfg = resolveFirstReply({ stateDir: dir });
+    expect(await clearEntry(cfg, "972500000000")).toBe(false);
   });
 });
