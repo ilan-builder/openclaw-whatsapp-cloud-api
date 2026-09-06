@@ -158,10 +158,22 @@ async function deliverText(
     // One reply written as two paragraphs is two WhatsApp messages, sent with a
     // gap, the way a person texts. Without a pacer it stays one message.
     const parts = pacer ? splitIntoParts(clean, config.humanRhythm) : [clean];
+    let lastSent: { ok: boolean; messageId?: string; error?: string } | null = null;
     for (const part of parts) {
       await pacer?.beforeSend();
       const sent = await sendText(config, to, part, log);
       result = result ?? sent;
+      lastSent = sent;
+    }
+    // Failures already log from sendRequest (src/api.ts); this is the only
+    // line that confirms a reply actually reached the customer.
+    if (lastSent?.ok) {
+      const masked = maskPeer(to);
+      log.info(
+        parts.length > 1
+          ? `[whatsapp-cloud] → sent ${parts.length} part(s) to ${masked} (${lastSent.messageId})`
+          : `[whatsapp-cloud] → sent to ${masked} (${lastSent.messageId})`
+      );
     }
   }
   for (const name of flows) {
