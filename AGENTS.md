@@ -38,6 +38,9 @@ Meta Cloud API → User's WhatsApp
 - `src/api.ts` — Meta Cloud API client. Handles all outbound: text, templates, interactive buttons/lists, media, read receipts, media download.
 - `src/webhook.ts` — HTTP server. Handles GET (Meta verification challenge) and POST (inbound messages). Parses all message types. Access control via allowlist.
 - `src/crypto.ts` — HMAC-SHA256 webhook signature verification with timing-safe comparison.
+- `src/first-reply.ts` — Canned, model-free answer to a known ad opener; per-peer state and the `[PINKLIME_HISTORY]` replay (PinkLime fork).
+- `src/handback.ts` — Replay of a human takeover as a `[PINKLIME_TAKEOVER]` block, claimed by an atomic rename (PinkLime fork).
+- `src/referral.ts` — Click-to-WhatsApp attribution: per-peer state, ad → product rules, and the `[PINKLIME_REFERRAL]` block delivered to the model once (PinkLime fork).
 - `src/types.ts` — 30+ TypeScript interfaces for the entire WhatsApp Cloud API surface.
 - `openclaw.plugin.json` — Plugin manifest with configSchema and uiHints for the Control UI.
 - `package.json` — Has `openclaw.extensions` and `openclaw.channel` metadata for discovery.

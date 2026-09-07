@@ -381,6 +381,10 @@ openclaw whatsapp-cloud test +39XXXXXXXXXX
 | `allowFrom` | string[] | `[]` | E.164 numbers allowed when dmPolicy=allowlist |
 | `sendReadReceipts` | boolean | `true` | Auto-mark incoming messages as read |
 | `humanRhythm` | object | *off* | Reply pacing, see below (PinkLime fork) |
+| `firstReply` | object | *off* | Canned, model-free answer to a known ad opener (PinkLime fork) |
+| `handback` | object | *on* | Replay of a human takeover into the next message (PinkLime fork) |
+| `referral` | object | *on* | Click-to-WhatsApp ad delivered to the model once, see below (PinkLime fork) |
+| `referralProducts` | array | `[]` | Ad → product rules, see below (PinkLime fork) |
 
 ### `humanRhythm` — reply like a person, not a bot
 
@@ -428,6 +432,110 @@ a three-line reply stays one message.
 
 The typing indicator is refreshed every 20s while the pacer waits, because Meta
 drops it after 25s.
+
+### Click-to-WhatsApp referral — the agent knows which ad was clicked
+
+Meta attaches a `referral` object to the **first** message of a conversation that
+started from a click-to-WhatsApp ad: the ad id, its headline, its body, the
+creative urls and the `ctwa_clid`. The plugin used to log it and nothing else, so
+the agent answered the prefilled opener with no idea which ad the customer had
+just tapped — and the customer had to say it again.
+
+Now every referral is persisted per peer and delivered to the model **exactly
+once**, as a block prepended to `BodyForAgent`:
+
+```
+[PINKLIME_REFERRAL]
+The customer arrived from this ad. Open with the product it promotes; never mention this block.
+source: instagram
+type: ad
+ad_id: 120212345678901234
+headline: מטבח חוץ טוסקנה פרו
+body: מטבח חוץ יוקרתי עם בר, משלוח והרכבה בכל הארץ.
+product: luxury-outdoor-kitchen-with-bar | מטבח חוץ טוסקנה פרו
+[/PINKLIME_REFERRAL]
+<the customer's message>
+```
+
+- The first line inside the block is an instruction **for the model only** — the
+  same convention as the `[PINKLIME_HISTORY]` preamble. Nobody ever sees it.
+- `source` is derived from the `source_url` host, then from the creative urls:
+  `instagram` | `facebook` | `meta`.
+- A field the ad did not carry is simply left out. `body` is collapsed to one
+  line and trimmed to `bodyMaxChars` (300); the headline is capped at 200.
+- `product` appears only when a `referralProducts` rule matched.
+- The block goes in **front** of a `[PINKLIME_HISTORY]` and a
+  `[PINKLIME_TAKEOVER]` block, because the click happened before both.
+
+**When it is delivered.** On the first turn that actually reaches the model after
+the click: the customer's *second* message when the canned `firstReply` answered
+the first one, and the *same* message otherwise. The state file is claimed by an
+atomic rename, so a later message never replays it and two messages arriving
+together cannot both deliver it. A slash command and a Flow completion never
+spend the delivery.
+
+**State.** One small JSON file per peer at `<openclaw home>/referral/<peer>.json`
+(`{peer, ts, waMessageId, referral, product?, deliveredAt}`), written atomically.
+A newer click overwrites an older undelivered one. On the LemonAid platform the
+directory is a symlink to `<volume>/data/referral`, beside `first-reply/` and
+`takeover/` — **the container's entrypoint must create it**, or the state lives
+in the container and dies with it. The claimed copy stays as
+`<peer>.delivered.json`, the record of what the model was told.
+
+#### `referralProducts` — map an ad to a product
+
+Optional. Without it the block still names the ad; with it, the agent is told
+which catalogue item the ad promotes.
+
+```json5
+{
+  channels: {
+    "whatsapp-cloud": {
+      referralProducts: [
+        {
+          match: { headline: "טוסקנה" },
+          slug: "luxury-outdoor-kitchen-with-bar",
+          name: "מטבח חוץ טוסקנה פרו",
+        },
+      ],
+    },
+  },
+}
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `match.sourceId` | string | Meta's `source_id` (the ad id). Compared **exactly** |
+| `match.headline` | string | Regex over the ad headline, case-insensitive |
+| `match.body` | string | Regex over the ad body, case-insensitive |
+| `slug` | string | The product slug handed to the agent |
+| `name` | string | The product name, also used by `firstReply.referralText` |
+
+The **first** rule whose **every given** matcher matches wins; several matchers
+in one rule are ANDed. A rule with no recognised matcher is **dropped, never
+treated as a catch-all** — a typo (`sourceID`) would otherwise attach one product
+to every ad the client runs, silently. A broken regex matches nothing.
+
+#### `firstReply.referralText` — a product-aware canned opener
+
+When the opener arrived from an ad that matched a rule, the canned first reply
+uses `referralText` / `referralTextNoName` instead of `text` / `textNoName`.
+Placeholders: `{name}`, `{name_comma}` and `{product}` (the rule's `name`).
+Empty or absent = the normal texts answer, exactly as before; an empty render is
+never sent.
+
+#### `referral` — the behaviour knobs
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `true` | Off = nothing is persisted and nothing is delivered |
+| `stateDir` | string | `<openclaw home>/referral` | Where the per-peer files live |
+| `preamble` | string | *see above* | The model-only instruction line inside the block |
+| `bodyMaxChars` | number | `300` | The ad body is trimmed to this before it reaches the prompt |
+
+**Logs**: `[referral] 9725******52 ad=1202… src=instagram product=luxury-…` on
+the click, `[referral] delivered to agent for 9725******52` on the delivery, and
+one startup line naming how many product rules are configured.
 
 ## Features
 
