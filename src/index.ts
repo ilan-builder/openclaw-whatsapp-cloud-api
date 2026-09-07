@@ -48,6 +48,17 @@ import {
   claimHandback,
   resolveHandback,
 } from "./handback.js";
+import {
+  buildReferralBody,
+  canDeliverReferral,
+  claimReferral,
+  matchProduct,
+  referralSource,
+  resolveReferral,
+  writeReferralEntry,
+  type ReferralEntry,
+  type ReferralProduct,
+} from "./referral.js";
 
 // ---------------------------------------------------------------------------
 // Account resolution types
@@ -129,6 +140,8 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     humanRhythm: resolveHumanRhythm(raw.humanRhythm),
     firstReply: resolveFirstReply(raw.firstReply),
     handback: resolveHandback(raw.handback),
+    referral: resolveReferral(raw.referral, raw.referralProducts),
+    referralProducts: Array.isArray(raw.referralProducts) ? raw.referralProducts : [],
   };
 }
 
@@ -465,6 +478,42 @@ const whatsappCloudChannel = {
             const sessionKey = buildInboundSessionKey(freshCfg, message.from);
 
             // ---------------------------------------------------------------
+            // Click-to-WhatsApp referral — persist (PinkLime fork)
+            //
+            // Meta attaches the ad's id, headline and body to the FIRST message
+            // of a conversation started from an ad. Write it down before
+            // anything else can return: the canned first reply answers that very
+            // message without the model, so the block has to survive until the
+            // customer's SECOND message. A newer click overwrites an older
+            // undelivered one. See referral.ts.
+            // ---------------------------------------------------------------
+            const rf = config.referral;
+            let referralProduct: ReferralProduct | null = null;
+            if (rf.enabled && message.referral) {
+              referralProduct = matchProduct(message.referral, rf.products);
+              const inboundTs = Number(message.timestamp) * 1000;
+              const entry: ReferralEntry = {
+                peer: message.from,
+                ts: new Date(
+                  Number.isFinite(inboundTs) && inboundTs > 0 ? inboundTs : Date.now()
+                ).toISOString(),
+                waMessageId: message.messageId,
+                referral: message.referral,
+                ...(referralProduct ? { product: referralProduct } : {}),
+                deliveredAt: null,
+              };
+              try {
+                await writeReferralEntry(rf, entry);
+                log.info(
+                  `[referral] ${maskPeer(message.from)} ad=${message.referral.source_id ?? "-"} ` +
+                    `src=${referralSource(message.referral)} product=${referralProduct?.slug ?? "none"}`
+                );
+              } catch (err) {
+                log.error(`[referral] state write failed for ${maskPeer(message.from)}: ${err}`);
+              }
+            }
+
+            // ---------------------------------------------------------------
             // A session reset makes the peer new again (PinkLime fork)
             //
             // `/new` means "start this conversation over", and the canned
@@ -494,14 +543,16 @@ const whatsappCloudChannel = {
             // ---------------------------------------------------------------
             let historyBody: string | null = null;
             const fr = config.firstReply;
+            // A slash command is not a conversation turn. It must reach the
+            // command parser untouched, and it must not spend a one-shot replay.
+            const slashCommand =
+              message.type === "text" && message.text.trimStart().startsWith("/");
             const plainText =
               message.type === "text" &&
               !message.media &&
               !message.flowReply &&
               !message.interactiveReply &&
-              // A slash command is not a conversation turn. It must reach the
-              // command parser untouched, and it must not spend the one replay.
-              !message.text.trimStart().startsWith("/");
+              !slashCommand;
             if (firstReplyUsable(fr) && plainText) {
               const existing = await readEntry(fr, message.from);
               const stale = existing ? isExpired(existing, fr.cooldownDays) : true;
@@ -521,7 +572,9 @@ const whatsappCloudChannel = {
                 const idx = matchIndex(message.text, fr.match);
                 if (idx >= 0) {
                   const name = firstName(message.senderName);
-                  const text = renderFirstReply(fr, name);
+                  // A matched ad selects the referralText pair, when the client
+                  // wrote one. Without it this is exactly today's render.
+                  const text = renderFirstReply(fr, name, referralProduct);
                   // Belt and braces: firstReplyUsable() already refuses a config
                   // with nothing to say. An empty WhatsApp message is worse than
                   // no saving, so an empty render falls through to the model.
@@ -597,6 +650,35 @@ const whatsappCloudChannel = {
                   `[takeover] replayed ${claim.entry.turns.length} turn(s) of a hand-back to ${maskPeer(message.from)}` +
                     (claim.entry.heldBy ? ` (held by ${claim.entry.heldBy})` : "")
                 );
+              }
+            }
+
+            // ---------------------------------------------------------------
+            // Click-to-WhatsApp referral — deliver, exactly once (PinkLime fork)
+            //
+            // This is the first turn that actually reaches the model since the
+            // click: the customer's SECOND message when the canned first reply
+            // answered the first one (the `return` above never gets here), and
+            // the same message otherwise. THE RENAME IS THE CLAIM, so a later
+            // message never replays it.
+            //
+            // The block goes at the very FRONT — the ad click happened before
+            // the canned exchange and before any hand-back, so the model reads
+            // the conversation in the order it happened.
+            //
+            // A slash command must reach the parser untouched and must not spend
+            // the delivery; a Flow completion rewrites the body wholesale below
+            // and can be dropped on a bad token, so it does not spend it either.
+            // ---------------------------------------------------------------
+            if (canDeliverReferral(rf, message)) {
+              const claim = await claimReferral(rf, message.from);
+              if (claim.malformed) {
+                log.warn(
+                  `[referral] discarded a malformed referral file for ${maskPeer(message.from)} — the model was told nothing`
+                );
+              } else if (claim.entry) {
+                historyBody = buildReferralBody(claim.entry, historyBody ?? message.text, rf);
+                log.info(`[referral] delivered to agent for ${maskPeer(message.from)}`);
               }
             }
 
@@ -720,6 +802,11 @@ const whatsappCloudChannel = {
         const status = firstReplyStatus(config.firstReply);
         if (status.active) log.info(status.line);
         else log.warn(status.line);
+      }
+      // Only when the client actually wrote rules: the referral block itself
+      // needs no config, so silence here means "no ad → product mapping".
+      if (config.referral.enabled && config.referral.products.length > 0) {
+        log.info(`[referral] ${config.referral.products.length} product rule(s) configured`);
       }
 
       // Update runtime status

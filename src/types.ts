@@ -5,6 +5,7 @@
 import type { HumanRhythmConfig } from "./human.js";
 import type { FirstReplyConfig } from "./first-reply.js";
 import type { HandbackConfig } from "./handback.js";
+import type { ReferralConfig, ReferralProductRule } from "./referral.js";
 
 /** Plugin configuration (stored under channels.whatsapp-cloud in openclaw.json) */
 /** A sendable WhatsApp Flow registered for this account (PinkLime fork). */
@@ -40,6 +41,10 @@ export interface WhatsAppCloudConfig {
   firstReply: FirstReplyConfig;
   /** Replay of a human takeover into the first message after the hand-back (PinkLime fork). */
   handback: HandbackConfig;
+  /** Click-to-WhatsApp ad attribution delivered to the model once (PinkLime fork). */
+  referral: ReferralConfig;
+  /** Ad → product rules, edited by the client. Read into `referral.products`. */
+  referralProducts: ReferralProductRule[];
 }
 
 /** Defaults applied when config values are missing */
@@ -116,8 +121,9 @@ export interface IncomingMessage {
   };
   /**
    * Click-to-WhatsApp ad attribution (PinkLime fork). Meta attaches it to the
-   * FIRST message of a conversation started from an ad. It is recorded, never
-   * acted on — nothing in the reply path branches on it.
+   * FIRST message of a conversation started from an ad. It is persisted per peer
+   * and delivered to the model exactly once as a `[PINKLIME_REFERRAL]` block —
+   * see referral.ts.
    */
   referral?: MessageReferral;
 }

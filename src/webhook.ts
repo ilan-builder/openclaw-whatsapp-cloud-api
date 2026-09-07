@@ -53,8 +53,9 @@ export interface ParsedInboundMessage {
   quotedMessageId?: string;
   /**
    * Click-to-WhatsApp ad attribution, present on the first message of a
-   * conversation started from an ad (PinkLime fork). Recorded for reporting;
-   * it never gates or changes any behaviour.
+   * conversation started from an ad (PinkLime fork). Persisted per peer and
+   * delivered to the model once as a `[PINKLIME_REFERRAL]` block — see
+   * referral.ts.
    */
   referral?: MessageReferral;
 }
@@ -279,8 +280,8 @@ function processMessage(
     }`
   );
 
-  // Click-to-WhatsApp attribution. Logged so we learn whether Meta actually
-  // populates it for our ads — nothing branches on it.
+  // Click-to-WhatsApp attribution. The channel persists it and delivers it to
+  // the model once; this line is the raw record of what Meta actually sent.
   if (inbound.referral) {
     const r = inbound.referral;
     log.info(

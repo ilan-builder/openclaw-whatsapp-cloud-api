@@ -32,6 +32,14 @@ export interface FirstReplyConfig {
   text: string;
   /** Used instead of `text` when no usable first name was found. Falls back to `text`. */
   textNoName: string;
+  /**
+   * Used INSTEAD of `text` when the visitor arrived from a click-to-WhatsApp ad
+   * that matched a `referralProducts` rule. `{product}` is the product's name.
+   * Empty or absent = the normal texts answer, exactly as before.
+   */
+  referralText: string;
+  /** The no-name form of `referralText`. Falls back to `referralText`. */
+  referralTextNoName: string;
   /** A peer whose last canned reply is older than this is treated as brand new again. */
   cooldownDays: number;
   /** Where the per-peer state files live. Defaults to <openclaw home>/first-reply. */
@@ -48,6 +56,8 @@ export const FIRST_REPLY_DEFAULTS: FirstReplyConfig = {
   match: [],
   text: "",
   textNoName: "",
+  referralText: "",
+  referralTextNoName: "",
   cooldownDays: 30,
   stateDir: "",
   historyPreamble:
@@ -77,11 +87,17 @@ export function resolveFirstReply(raw: any): FirstReplyConfig {
   const r = raw ?? {};
   const d = FIRST_REPLY_DEFAULTS;
   const text = typeof r.text === "string" ? r.text : d.text;
+  const referralText = typeof r.referralText === "string" ? r.referralText : d.referralText;
   return {
     enabled: r.enabled ?? d.enabled,
     match: strList(r.match),
     text,
     textNoName: typeof r.textNoName === "string" && r.textNoName ? r.textNoName : text,
+    referralText,
+    referralTextNoName:
+      typeof r.referralTextNoName === "string" && r.referralTextNoName
+        ? r.referralTextNoName
+        : referralText,
     cooldownDays: num(r.cooldownDays, d.cooldownDays),
     stateDir: typeof r.stateDir === "string" && r.stateDir ? r.stateDir : defaultStateDir(),
     historyPreamble:
@@ -180,16 +196,33 @@ export function firstName(senderName?: string | null): string | null {
   return first;
 }
 
-/** `{name}` → the first name (or ""), `{name_comma}` → " <name>," or ",". */
-export function renderFirstReply(cfg: FirstReplyConfig, name: string | null): string {
+/**
+ * `{name}` → the first name (or ""), `{name_comma}` → " <name>," or ",",
+ * `{product}` → the matched product's name (or "").
+ *
+ * A `product` is passed when the opener arrived from a click-to-WhatsApp ad that
+ * matched a `referralProducts` rule. It selects the `referralText` pair — but
+ * only when that pair has something in it; a client that never wrote one keeps
+ * today's behaviour with no special case.
+ */
+export function renderFirstReply(
+  cfg: FirstReplyConfig,
+  name: string | null,
+  product?: { slug: string; name: string } | null
+): string {
+  const useReferral =
+    !!product && (cfg.referralText.trim().length > 0 || cfg.referralTextNoName.trim().length > 0);
+  const primary = useReferral ? cfg.referralText : cfg.text;
+  const secondary = useReferral ? cfg.referralTextNoName : cfg.textNoName;
   // Either text may be missing or whitespace-only; the other one then answers.
   // An empty render is never sent — the caller falls through to the model.
-  const withName = cfg.text.trim() ? cfg.text : cfg.textNoName;
-  const withoutName = cfg.textNoName.trim() ? cfg.textNoName : cfg.text;
+  const withName = primary.trim() ? primary : secondary;
+  const withoutName = secondary.trim() ? secondary : primary;
   const template = name ? withName : withoutName;
   return template
     .replace(/\{name_comma\}/g, name ? ` ${name},` : ",")
     .replace(/\{name\}/g, name ?? "")
+    .replace(/\{product\}/g, product?.name ?? "")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
 }
