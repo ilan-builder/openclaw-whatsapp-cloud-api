@@ -44,6 +44,14 @@ import {
   type FirstReplyEntry,
 } from "./first-reply.js";
 import {
+  clearBlock,
+  payloadHasMarker,
+  readBlock,
+  resolveBlock,
+  writeBlock,
+  type BlockEntry,
+} from "./block.js";
+import {
   buildTakeoverBody,
   claimHandback,
   resolveHandback,
@@ -141,6 +149,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     firstReply: resolveFirstReply(raw.firstReply),
     handback: resolveHandback(raw.handback),
     referral: resolveReferral(raw.referral, raw.referralProducts),
+    block: resolveBlock(raw.block),
     referralProducts: Array.isArray(raw.referralProducts) ? raw.referralProducts : [],
   };
 }
@@ -464,10 +473,14 @@ const whatsappCloudChannel = {
           // Reply pacing (PinkLime fork). The clock starts here, when the customer
           // pressed send, so the wait covers model generation instead of adding to it.
           const rhythm = config.humanRhythm;
-          const pacer: ReplyPacer | undefined = rhythm.enabled
-            ? createReplyPacer({ config, rhythm, messageId: message.messageId, log })
-            : undefined;
-          if (!pacer) {
+          // A blocked peer reaches this handler for exactly one reason — they
+          // sent `/new` or `/reset` (webhook.ts) — and nobody is going to write
+          // back to them, so no pacing and no typing indicator either way.
+          const pacer: ReplyPacer | undefined =
+            rhythm.enabled && !message.blocked
+              ? createReplyPacer({ config, rhythm, messageId: message.messageId, log })
+              : undefined;
+          if (!pacer && !message.blocked) {
             // Show typing indicator immediately (auto-dismissed on reply or after 25s)
             sendTypingIndicator(config, message.messageId, log).catch(() => {});
           }
@@ -476,6 +489,32 @@ const whatsappCloudChannel = {
             // Load fresh config for dispatch
             const freshCfg = await runtime.config.loadConfig();
             const sessionKey = buildInboundSessionKey(freshCfg, message.from);
+
+            // ---------------------------------------------------------------
+            // Troll block — lifting your own block (PinkLime fork)
+            //
+            // `message.blocked` is set by the block gate in webhook.ts and by
+            // nothing else: this peer is blocked and sent `/new` or `/reset`,
+            // the one message the gate lets through. Whoever may run commands
+            // here may also lift their own block — that is how the feature is
+            // tested from a real phone.
+            //
+            // An unauthorized peer stops here and the model is never called;
+            // an authorized one falls through, so the reset they asked for also
+            // actually happens. See block.ts.
+            // ---------------------------------------------------------------
+            if (message.blocked) {
+              if (!commandsAllowedFrom(freshCfg, message.from)) {
+                log.info(
+                  `[block] ignored a session reset from blocked ${maskPeer(message.from)} — not allowed to run commands`
+                );
+                return;
+              }
+              const lifted = await clearBlock(config.block, message.from);
+              log.info(
+                `[block] ${lifted ? "lifted" : "already clear"} for ${maskPeer(message.from)} after a session reset`
+              );
+            }
 
             // ---------------------------------------------------------------
             // Click-to-WhatsApp referral — persist (PinkLime fork)
@@ -752,12 +791,44 @@ const whatsappCloudChannel = {
               }
             }
 
+            // ---------------------------------------------------------------
+            // Troll block — the agent's verdict (PinkLime fork)
+            //
+            // The agent answers a troll with one marker and nothing else. The
+            // verdict covers the WHOLE turn, not the one payload it arrives in:
+            // the runtime hands the channel one payload per block of the reply,
+            // and `humanRhythm` then splits a single payload into several
+            // WhatsApp messages on blank lines. A check that only suppressed the
+            // payload it found the marker in would let the rest of the reply —
+            // and any media with it — reach the troll.
+            //
+            // So the marker is looked for in each payload BEFORE anything is
+            // split or sent, and once it is found nothing else leaves for the
+            // rest of the turn. The block file is written afterwards, from one
+            // place, so a failed write cannot half-apply it. See block.ts.
+            // ---------------------------------------------------------------
+            const blk = config.block;
+            const verdict: { hit: boolean; reason: string | null } = { hit: false, reason: null };
+
             // Dispatch via OpenClaw's reply system
             await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
               ctx: msgCtx,
               cfg: freshCfg,
               dispatcherOptions: {
                 deliver: async (payload: any) => {
+                  if (blk.enabled) {
+                    if (!verdict.hit) {
+                      const marked = payloadHasMarker(payload, blk.marker);
+                      if (marked.found) {
+                        verdict.hit = true;
+                        verdict.reason = marked.reason;
+                        // Stop the typing indicator now: a reply that is never
+                        // coming must not keep announcing itself.
+                        pacer?.stop();
+                      }
+                    }
+                    if (verdict.hit) return; // no text, no media, nothing
+                  }
                   if (payload.text) {
                     await deliverText(config, message.from, payload.text, log, pacer);
                   }
@@ -777,6 +848,32 @@ const whatsappCloudChannel = {
                 },
               },
             });
+
+            // The turn is over and the customer got nothing. Write the block, so
+            // the NEXT message from this number is dropped in webhook.ts, before
+            // the read receipt and long before the model.
+            if (verdict.hit) {
+              const entry: BlockEntry = {
+                peer: message.from,
+                reason: verdict.reason,
+                source: "bot",
+                blockedAt: new Date().toISOString(),
+                blockedBy: resolveDefaultAgentId(freshCfg) ?? null,
+                triggerText: message.text ? message.text.slice(0, 500) : null,
+                sessionKey,
+              };
+              try {
+                await writeBlock(blk, entry);
+                log.warn(
+                  `[block] BLOCKED ${maskPeer(message.from)} by the agent` +
+                    `${verdict.reason ? ` (${verdict.reason})` : ""} — the reply was suppressed`
+                );
+              } catch (err) {
+                // The reply was already withheld, so the troll got nothing this
+                // turn; only the NEXT one will cost a prompt. Loud, not fatal.
+                log.error(`[block] state write failed for ${maskPeer(message.from)}: ${err}`);
+              }
+            }
           } catch (err) {
             log.error(`[whatsapp-cloud] Failed to dispatch inbound message: ${err}`);
           } finally {

@@ -4,6 +4,7 @@
 
 import type { HumanRhythmConfig } from "./human.js";
 import type { FirstReplyConfig } from "./first-reply.js";
+import type { BlockConfig } from "./block.js";
 import type { HandbackConfig } from "./handback.js";
 import type { ReferralConfig, ReferralProductRule } from "./referral.js";
 
@@ -43,6 +44,8 @@ export interface WhatsAppCloudConfig {
   handback: HandbackConfig;
   /** Click-to-WhatsApp ad attribution delivered to the model once (PinkLime fork). */
   referral: ReferralConfig;
+  /** Troll block: the agent's marker, and the peers it has already blocked (PinkLime fork). */
+  block: BlockConfig;
   /** Ad → product rules, edited by the client. Read into `referral.products`. */
   referralProducts: ReferralProductRule[];
 }

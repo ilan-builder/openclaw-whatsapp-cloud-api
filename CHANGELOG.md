@@ -6,6 +6,50 @@ by commit SHA, so an entry here is only live once that pin moves.
 
 ## Unreleased
 
+### Added — troll block: the agent decides, the platform enforces (2026-09-14)
+
+Two real porcini conversations cost $0.33 and $0.37 to be insulted and then fed
+fake event details, and both ended with a worthless lead handed to the team.
+Nothing could stop them: every inbound message is a full cold prompt, and only
+the model can tell a customer from a troll. New `src/block.ts`:
+
+- **The marker.** A reply that carries `PINKLIME_BLOCK` anywhere in it (optional
+  `:reason`, e.g. `PINKLIME_BLOCK:abusive`) sends the customer **nothing** — not
+  the marker, not text around it, and no media in the same turn. The verdict is
+  taken per dispatcher payload BEFORE `humanRhythm` splits it, and it holds for
+  the rest of the turn, so a marked reply cannot leak one of its parts. Matching
+  is "contains", the opposite of `first-reply.ts`, and for the opposite reason:
+  the text is our own agent's, and a model that obeys almost — a stray full
+  stop, one polite sentence in front — must still block.
+- **The block.** `<openclaw home>/blocked/<peer>.json`, written atomically
+  (tmp + rename): `{peer, reason, source:"bot"|"operator", blockedAt, blockedBy,
+  triggerText, sessionKey}`. On the LemonAid platform the directory is a symlink
+  to `<volume>/data/blocked` — **the container entrypoint must create it**,
+  beside `first-reply/`, `referral/` and `takeover/`. The platform writes the
+  same file for an operator's manual block.
+- **Enforcement, as early as there is anything to enforce.** `webhook.ts` reads
+  the block file before the read receipt and before the typing indicator, so a
+  blocked number sees no sign that anyone is still there, and the message never
+  reaches the runtime — zero tokens. The file is read fresh for EVERY message,
+  never cached: an operator's unmute deletes it and the next message goes
+  through.
+- **A block is not a black hole.** Every dropped message is appended to
+  `<peer>.jsonl` (capped at `logMax`, default 200) so the platform can merge it
+  back into the transcript, flagged, and an operator can see the bot got it
+  wrong. An unmute keeps the log.
+- **Lifting your own block.** `/new` and `/reset` are the one message the gate
+  lets through. Authorization is decided against `commands.allowFrom` on the
+  full runtime config, which only the channel handler holds, so the command
+  passes the gate carrying the block and `index.ts` makes the call: authorized
+  clears the block and falls through (the reset also happens), unauthorized
+  stops there. Neither reaches the model.
+- `enabled` defaults to **true**, like `handback` and unlike `firstReply`: a bot
+  whose prompt never emits the marker never blocks anybody, but the platform's
+  manual Block button must work for every client.
+
+32 tests in `src/__tests__/block.test.ts`, including the multi-part leak, the
+read-receipt silence and the unmute.
+
 ### Added — click-to-WhatsApp referral reaches the model (2026-09-07)
 
 Meta's `referral` object was parsed and logged, and kept on the first-reply entry

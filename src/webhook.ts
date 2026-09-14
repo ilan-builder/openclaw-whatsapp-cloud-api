@@ -2,6 +2,8 @@
 // Webhook Server — receives inbound messages from Meta
 // ---------------------------------------------------------------------------
 
+import { appendBlockedMessage, maskPeer, readBlock, type BlockEntry } from "./block.js";
+import { isSessionResetCommand } from "./first-reply.js";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { verifyWebhookSignature } from "./crypto.js";
 import { markAsRead } from "./api.js";
@@ -58,6 +60,13 @@ export interface ParsedInboundMessage {
    * referral.ts.
    */
   referral?: MessageReferral;
+  /**
+   * The peer's standing block, attached ONLY when a blocked peer sent `/new` or
+   * `/reset` — the one message the block gate lets through (PinkLime fork). Its
+   * presence means "decide the unblock, then stop": never dispatch this to the
+   * model. See block.ts.
+   */
+  blocked?: BlockEntry;
 }
 
 export type InboundMessageHandler = (message: ParsedInboundMessage) => void;
@@ -225,7 +234,7 @@ async function handleIncoming(
       // Process incoming messages
       if (messages?.length) {
         for (const msg of messages) {
-          processMessage(msg, contacts ?? [], config, onMessage, log);
+          await processMessage(msg, contacts ?? [], config, onMessage, log);
         }
       }
     }
@@ -236,13 +245,13 @@ async function handleIncoming(
 // Parse a single incoming message
 // ---------------------------------------------------------------------------
 
-function processMessage(
+async function processMessage(
   msg: WAMessage,
   contacts: WebhookContact[],
   config: WhatsAppCloudConfig,
   onMessage: InboundMessageHandler,
   log: Logger
-): void {
+): Promise<void> {
   // Access control
   if (config.dmPolicy === "allowlist") {
     const normalized = normalizePhone(msg.from);
@@ -289,6 +298,48 @@ function processMessage(
         `source_type=${r.source_type ?? "-"} source_id=${r.source_id ?? "-"} ` +
         `ctwa_clid=${r.ctwa_clid ? "yes" : "no"} url=${r.source_url ?? "-"}`
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Troll block (PinkLime fork)
+  //
+  // The earliest point at which this instance knows who is writing and what
+  // they wrote. It is deliberately AHEAD of the read receipt and of the typing
+  // indicator: a blocked number must see no sign that anyone is still there,
+  // and no part of this message may reach the runtime, where it would cost a
+  // full cold prompt.
+  //
+  // Read fresh every time — an operator's unmute deletes the file and the very
+  // next message has to go through. See block.ts.
+  // -------------------------------------------------------------------------
+  if (config.block?.enabled) {
+    const blocked = await readBlock(config.block, msg.from);
+    if (blocked) {
+      // ONE exception: `/new` and `/reset`. Whoever may run commands here may
+      // also lift their own block — that is how the feature is tested from a
+      // real phone — but the list that decides it is `commands.allowFrom` on
+      // the FULL runtime config, which only the channel handler holds. So the
+      // command passes this gate carrying the block with it and index.ts makes
+      // the call. Either way it is never dispatched to the model, so an
+      // unauthorized peer typing "/new" still costs nothing.
+      if (!isSessionResetCommand(inbound.text)) {
+        log.info(
+          `[block] dropped a ${msg.type} message from ${maskPeer(msg.from)} ` +
+            `(blocked ${blocked.blockedAt}${blocked.reason ? `, ${blocked.reason}` : ""})`
+        );
+        await appendBlockedMessage(config.block, msg.from, {
+          ts: new Date(Number(msg.timestamp) * 1000 || Date.now()).toISOString(),
+          waMessageId: msg.id,
+          type: msg.type,
+          text: inbound.text,
+          senderName: senderName ?? null,
+        });
+        return; // no read receipt, no typing, no dispatch, no tokens
+      }
+      inbound.blocked = blocked;
+      onMessage(inbound); // straight past the read receipt
+      return;
+    }
   }
 
   // Send read receipt

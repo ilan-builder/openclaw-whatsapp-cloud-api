@@ -433,6 +433,60 @@ a three-line reply stays one message.
 The typing indicator is refreshed every 20s while the pacer waits, because Meta
 drops it after 25s.
 
+### `block` — the agent blocks a troll, the platform enforces it
+
+Every inbound WhatsApp message is a full cold prompt. A troll who keeps writing
+therefore keeps spending, and the only thing that can tell a troll from a
+customer is the model itself. So the **bot decides** and the **channel
+enforces**.
+
+Tell the agent, in its own prompt, to answer a troll with one marker and nothing
+else. When a reply carries `PINKLIME_BLOCK` anywhere in it, the channel:
+
+1. sends the customer **nothing** — not the marker, not any text around it, and
+   no media from the same turn,
+2. writes `<openclaw home>/blocked/<peer>.json`,
+3. and from the next message on, drops that number **before the read receipt and
+   before the typing indicator**, so it never reaches the runtime at all.
+
+```json
+{
+  "channels": {
+    "whatsapp-cloud": {
+      "block": {
+        "enabled": true,
+        "marker": "PINKLIME_BLOCK",
+        "logMax": 200
+      }
+    }
+  }
+}
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | A bot whose prompt never emits the marker never blocks anybody, so this is safe on by default — and an operator's manual block needs it on. |
+| `marker` | `PINKLIME_BLOCK` | Matched as a literal anywhere in the reply. An optional `:reason` suffix (`PINKLIME_BLOCK:gibberish`) is recorded for the operator. |
+| `stateDir` | `<openclaw home>/blocked` | Must survive a restart. On LemonAid it is a symlink to `<volume>/data/blocked`. |
+| `logMax` | `200` | Dropped messages kept per peer in `<peer>.jsonl`, so a block is never a black hole. `0` to log none. |
+
+**Why "contains" and not an exact match.** `firstReply` matches an opener
+exactly, because that text is the *customer's* and a near miss must reach the
+model. Here the text is our *own agent's*, the instruction is "the marker and
+nothing else", and the failure that matters is a model that obeys almost — a
+stray full stop, or one polite sentence in front of the marker. Every one of
+those must still block, and the customer must still see none of it.
+
+**Multi-part replies.** The runtime hands the channel one payload per block of
+the reply, and `humanRhythm` then splits a payload into several WhatsApp
+messages on blank lines. The marker is looked for in each payload *before*
+anything is split, and once found nothing else leaves for the rest of the turn.
+
+**Unmuting.** Delete the peer's `.json`. The file is read fresh for every
+message, so the very next one goes through. From a phone, a number listed in
+`commands.allowFrom` can lift its own block with `/new` or `/reset` — the one
+message the gate lets past, and it still never reaches the model.
+
 ### Click-to-WhatsApp referral — the agent knows which ad was clicked
 
 Meta attaches a `referral` object to the **first** message of a conversation that
@@ -603,6 +657,7 @@ src/
   api.ts          — Meta Cloud API client (outbound)
   webhook.ts      — HTTP server (inbound webhooks)
   crypto.ts       — HMAC-SHA256 signature verification
+  block.ts        — Troll block: the agent's marker, per-peer block files
   setup.ts        — Interactive setup wizard
   runtime.ts      — OpenClaw runtime accessor
   __tests__/      — Vitest test suites
