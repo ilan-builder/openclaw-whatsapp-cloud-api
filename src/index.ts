@@ -25,7 +25,12 @@ import {
   splitIntoParts,
   type ReplyPacer,
 } from "./human.js";
-import { setWhatsAppCloudRuntime, getWhatsAppCloudRuntime } from "./runtime.js";
+import {
+  setWhatsAppCloudRuntime,
+  getWhatsAppCloudRuntime,
+  loadRuntimeConfig,
+  writeRuntimeConfig,
+} from "./runtime.js";
 import {
   buildHistoryBody,
   clearEntry,
@@ -487,7 +492,7 @@ const whatsappCloudChannel = {
           try {
 
             // Load fresh config for dispatch
-            const freshCfg = await runtime.config.loadConfig();
+            const freshCfg = await loadRuntimeConfig(runtime);
             const sessionKey = buildInboundSessionKey(freshCfg, message.from);
 
             // ---------------------------------------------------------------
@@ -959,7 +964,7 @@ const whatsappCloudChannel = {
           "whatsapp-cloud": rest,
         };
 
-        await getWhatsAppCloudRuntime().config.writeConfigFile(nextCfg);
+        await writeRuntimeConfig(nextCfg);
       }
 
       return {
@@ -1055,7 +1060,7 @@ const plugin = {
                 // Save via runtime config
                 try {
                   const runtime = getWhatsAppCloudRuntime();
-                  const currentCfg = await runtime.config.loadConfig();
+                  const currentCfg = await loadRuntimeConfig(runtime);
                   const nextCfg = {
                     ...currentCfg,
                     channels: {
@@ -1074,7 +1079,7 @@ const plugin = {
                       },
                     },
                   };
-                  await runtime.config.writeConfigFile(nextCfg);
+                  await writeRuntimeConfig(nextCfg, runtime);
                   log.info("[whatsapp-cloud] Configuration saved to openclaw.json");
                   console.log("\n  Then: openclaw gateway restart\n");
                 } catch {
@@ -1106,7 +1111,7 @@ const plugin = {
 
               try {
                 const runtime = getWhatsAppCloudRuntime();
-                const cfg = await runtime.config.loadConfig();
+                const cfg = await loadRuntimeConfig(runtime);
                 const config = resolveConfig(cfg);
                 const validation = validateConfig(config);
                 if (!validation.valid) {
@@ -1129,7 +1134,7 @@ const plugin = {
             .action(async (phone: string) => {
               try {
                 const runtime = getWhatsAppCloudRuntime();
-                const cfg = await runtime.config.loadConfig();
+                const cfg = await loadRuntimeConfig(runtime);
                 const config = resolveConfig(cfg);
 
                 if (!config.accessToken || !config.phoneNumberId) {
