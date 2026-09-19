@@ -15,7 +15,7 @@ import { getMediaUrl, downloadMedia, sendMedia, uploadMedia } from "./api.js";
 import type { WhatsAppCloudConfig, SendResult, Logger } from "./types.js";
 import type { ParsedInboundMessage } from "./webhook.js";
 
-const MEDIA_DIR = join(tmpdir(), "openclaw-wa-cloud-media");
+const MEDIA_DIR = join(tmpdir(), "openclaw", "openclaw-wa-cloud-media");
 const MAX_AGE_MS = 60 * 60 * 1000; // best-effort cleanup of files older than 1h
 
 const EXT_BY_MIME: Record<string, string> = {
