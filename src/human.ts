@@ -98,6 +98,24 @@ function between(minMs: number, maxMs: number): number {
  * is one message, exactly as today. A long paragraph is never split, and the
  * tail is merged so the reply never exceeds `maxParts` messages.
  */
+/**
+ * Place the text beats around a photo.
+ *
+ * One beat stays in front of the photo, which is how a normal reply is sent.
+ * Two or more beats put only the last beat after the photo, so an opening
+ * question arrives as its own message once the picture is already on screen.
+ * With no photo, every beat stays in order.
+ */
+export function textAroundMedia(
+  parts: string[],
+  hasMedia: boolean
+): { before: string[]; after: string[] } {
+  if (hasMedia && parts.length > 1) {
+    return { before: parts.slice(0, -1), after: [parts[parts.length - 1]] };
+  }
+  return { before: parts, after: [] };
+}
+
 export function splitIntoParts(text: string, rhythm: HumanRhythmConfig): string[] {
   if (!rhythm.splitParagraphs) return [text];
   const parts = text

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   resolveHumanRhythm,
   splitIntoParts,
+  textAroundMedia,
   createReplyPacer,
   HUMAN_RHYTHM_DEFAULTS,
 } from "../human.js";
@@ -62,6 +63,21 @@ describe("splitIntoParts", () => {
     const parts = splitIntoParts("א\n\nב\n\nג\n\nד", rhythm);
     expect(parts).toHaveLength(3);
     expect(parts[2]).toBe("ג\n\nד");
+  });
+
+  it("sends the last beat after the photo, and leaves a single beat in front", () => {
+    expect(textAroundMedia(["המוצר והמחיר", "איפה חשבתם למקם?"], true)).toEqual({
+      before: ["המוצר והמחיר"],
+      after: ["איפה חשבתם למקם?"],
+    });
+    expect(textAroundMedia(["הודעה אחת"], true)).toEqual({
+      before: ["הודעה אחת"],
+      after: [],
+    });
+    expect(textAroundMedia(["א", "ב"], false)).toEqual({
+      before: ["א", "ב"],
+      after: [],
+    });
   });
 
   it("is inert when splitting is turned off", () => {

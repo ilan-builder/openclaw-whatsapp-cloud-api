@@ -23,6 +23,7 @@ import {
   resolveHumanRhythm,
   createReplyPacer,
   splitIntoParts,
+  textAroundMedia,
   type ReplyPacer,
 } from "./human.js";
 import {
@@ -202,6 +203,61 @@ async function deliverText(
           : `[whatsapp-cloud] → sent to ${masked} (${lastSent.messageId})`
       );
     }
+  }
+  for (const name of flows) {
+    const flow = config.flows?.[name];
+    if (!flow?.flowId) {
+      log.warn(`[whatsapp-cloud] Unknown flow "${name}" — directive dropped`);
+      continue;
+    }
+    await pacer?.beforeSend();
+    const token = mintFlowToken({ f: name, p: to, t: Date.now() }, config.appSecret);
+    const fr = await sendFlow(config, to, flow, token, log);
+    if (!fr.ok) log.error(`[whatsapp-cloud] Flow send failed (${name}): ${fr.error}`);
+    result = result ?? fr;
+  }
+  return result;
+}
+
+// One agent turn: the text beats, then the photo. When the reply is two beats
+// and a photo, the last beat is sent after the photo. That is the opening
+// question. A pacer is what allows the split; without one this is one text
+// message and then the photo, exactly as before.
+async function deliverTurn(
+  config: WhatsAppCloudConfig,
+  to: string,
+  text: string,
+  mediaUrls: string[],
+  log: Logger,
+  pacer?: ReplyPacer
+): Promise<{ ok: boolean; messageId?: string; error?: string } | null> {
+  const { text: clean, flows } = extractDirectives(text);
+  const parts = clean ? (pacer ? splitIntoParts(clean, config.humanRhythm) : [clean]) : [];
+  const { before, after } = textAroundMedia(parts, mediaUrls.length > 0);
+  let result: { ok: boolean; messageId?: string; error?: string } | null = null;
+  const textSend = { count: 0, ok: false, messageId: "" };
+  const sendOne = async (part: string) => {
+    await pacer?.beforeSend();
+    const sent = await sendText(config, to, part, log);
+    result = result ?? sent;
+    textSend.count += 1;
+    textSend.ok = sent.ok;
+    textSend.messageId = sent.messageId ?? "";
+  };
+  for (const part of before) await sendOne(part);
+  for (const url of mediaUrls) {
+    await pacer?.beforeSend();
+    const sent = await sendOutboundMedia(config, to, url, undefined, log);
+    if (!sent.ok) log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
+  }
+  for (const part of after) await sendOne(part);
+  if (textSend.ok) {
+    const masked = maskPeer(to);
+    log.info(
+      textSend.count > 1
+        ? `[whatsapp-cloud] → sent ${textSend.count} part(s) to ${masked} (${textSend.messageId})`
+        : `[whatsapp-cloud] → sent to ${masked} (${textSend.messageId})`
+    );
   }
   for (const name of flows) {
     const flow = config.flows?.[name];
@@ -834,18 +890,13 @@ const whatsappCloudChannel = {
                     }
                     if (verdict.hit) return; // no text, no media, nothing
                   }
-                  if (payload.text) {
-                    await deliverText(config, message.from, payload.text, log, pacer);
-                  }
                   // One de-duplicated list: the runtime sets mediaUrls AND
                   // mediaUrl for a single attachment, and handling both fields
-                  // sent the same photo twice.
-                  for (const url of mediaUrlsFromPayload(payload)) {
-                    await pacer?.beforeSend();
-                    const sent = await sendOutboundMedia(config, message.from, url, undefined, log);
-                    if (!sent.ok) {
-                      log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
-                    }
+                  // sent the same photo twice. The last text beat of a split
+                  // reply is sent after that photo.
+                  const urls = mediaUrlsFromPayload(payload);
+                  if (payload.text || urls.length > 0) {
+                    await deliverTurn(config, message.from, payload.text ?? "", urls, log, pacer);
                   }
                 },
                 onReplyStart: () => {
