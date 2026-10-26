@@ -40,6 +40,14 @@ export interface FirstReplyConfig {
   referralText: string;
   /** The no-name form of `referralText`. Falls back to `referralText`. */
   referralTextNoName: string;
+  /**
+   * Per-opener replies, checked BEFORE `match`/`text`. Each rule has its own
+   * openers (exact match, like `match`), its own texts and an optional photo
+   * (`media`, an absolute path in the container) sent the way a model reply
+   * with a MEDIA line is: the text, the photo, and when the text has a blank
+   * line and a pacer, its last paragraph after the photo. Empty = none.
+   */
+  rules: FirstReplyRule[];
   /** A peer whose last canned reply is older than this is treated as brand new again. */
   cooldownDays: number;
   /** Where the per-peer state files live. Defaults to <openclaw home>/first-reply. */
@@ -51,6 +59,13 @@ export interface FirstReplyConfig {
   historyPreamble: string;
 }
 
+export interface FirstReplyRule {
+  match: string[];
+  text: string;
+  textNoName: string;
+  media: string;
+}
+
 export const FIRST_REPLY_DEFAULTS: FirstReplyConfig = {
   enabled: false,
   match: [],
@@ -58,6 +73,7 @@ export const FIRST_REPLY_DEFAULTS: FirstReplyConfig = {
   textNoName: "",
   referralText: "",
   referralTextNoName: "",
+  rules: [],
   cooldownDays: 30,
   stateDir: "",
   historyPreamble:
@@ -82,6 +98,25 @@ function strList(value: unknown): string[] {
   return value.map((v) => String(v)).filter((v) => v.trim().length > 0);
 }
 
+function resolveRules(value: unknown): FirstReplyRule[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((r) => r && typeof r === "object")
+    .map((r: any) => {
+      const text = typeof r.text === "string" ? r.text : "";
+      return {
+        match: strList(r.match),
+        text,
+        textNoName: typeof r.textNoName === "string" && r.textNoName ? r.textNoName : text,
+        media: typeof r.media === "string" ? r.media.trim() : "",
+      };
+    });
+}
+
+function ruleUsable(rule: FirstReplyRule): boolean {
+  return rule.match.length > 0 && (rule.text.trim().length > 0 || rule.textNoName.trim().length > 0);
+}
+
 /** Read `channels.whatsapp-cloud.firstReply`, falling back to the defaults above. */
 export function resolveFirstReply(raw: any): FirstReplyConfig {
   const r = raw ?? {};
@@ -98,6 +133,7 @@ export function resolveFirstReply(raw: any): FirstReplyConfig {
       typeof r.referralTextNoName === "string" && r.referralTextNoName
         ? r.referralTextNoName
         : referralText,
+    rules: resolveRules(r.rules),
     cooldownDays: num(r.cooldownDays, d.cooldownDays),
     stateDir: typeof r.stateDir === "string" && r.stateDir ? r.stateDir : defaultStateDir(),
     historyPreamble:
@@ -122,7 +158,8 @@ export function firstReplyHasText(cfg: FirstReplyConfig): boolean {
  * reported once at startup by `firstReplyStatus()`.
  */
 export function firstReplyUsable(cfg: FirstReplyConfig): boolean {
-  return cfg.enabled && cfg.match.length > 0 && firstReplyHasText(cfg);
+  if (!cfg.enabled) return false;
+  return (cfg.match.length > 0 && firstReplyHasText(cfg)) || cfg.rules.some(ruleUsable);
 }
 
 /**
@@ -131,6 +168,14 @@ export function firstReplyUsable(cfg: FirstReplyConfig): boolean {
  */
 export function firstReplyStatus(cfg: FirstReplyConfig): { active: boolean; line: string } {
   if (!cfg.enabled) return { active: false, line: "[first-reply] disabled" };
+  const rules = cfg.rules.filter(ruleUsable).length;
+  if (rules > 0) {
+    const generic = cfg.match.length > 0 && firstReplyHasText(cfg) ? cfg.match.length : 0;
+    return {
+      active: true,
+      line: `[first-reply] ACTIVE — ${rules} rule(s), ${generic} generic opener(s), cooldown ${cfg.cooldownDays}d`,
+    };
+  }
   if (!firstReplyHasText(cfg)) {
     return { active: false, line: "[first-reply] enabled but no text configured; inactive" };
   }
@@ -214,6 +259,15 @@ export function renderFirstReply(
     !!product && (cfg.referralText.trim().length > 0 || cfg.referralTextNoName.trim().length > 0);
   const primary = useReferral ? cfg.referralText : cfg.text;
   const secondary = useReferral ? cfg.referralTextNoName : cfg.textNoName;
+  return renderTemplate(primary, secondary, name, product);
+}
+
+function renderTemplate(
+  primary: string,
+  secondary: string,
+  name: string | null,
+  product?: { slug: string; name: string } | null
+): string {
   // Either text may be missing or whitespace-only; the other one then answers.
   // An empty render is never sent — the caller falls through to the model.
   const withName = primary.trim() ? primary : secondary;
@@ -225,6 +279,45 @@ export function renderFirstReply(
     .replace(/\{product\}/g, product?.name ?? "")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
+}
+
+export interface FirstReplyPick {
+  text: string;
+  /** A photo to send with the text, or null. */
+  media: string | null;
+  /** The rule that answered, or -1 for the generic `match`/`text`. */
+  rule: number;
+  /** Which opener of that rule (or of `match`) matched. */
+  idx: number;
+}
+
+/**
+ * The canned reply for this opener, or null when the model should answer.
+ * A rule answers before the generic `match`/`text`. An empty render is never
+ * returned: an empty WhatsApp message is worse than no saving.
+ */
+export function pickFirstReply(
+  cfg: FirstReplyConfig,
+  inboundText: string,
+  name: string | null,
+  product?: { slug: string; name: string } | null
+): FirstReplyPick | null {
+  for (let r = 0; r < cfg.rules.length; r++) {
+    const rule = cfg.rules[r];
+    if (!ruleUsable(rule)) continue;
+    const idx = matchIndex(inboundText, rule.match);
+    if (idx < 0) continue;
+    const text = renderTemplate(rule.text, rule.textNoName, name, product);
+    if (text) return { text, media: rule.media || null, rule: r, idx };
+  }
+  if (cfg.match.length > 0 && firstReplyHasText(cfg)) {
+    const idx = matchIndex(inboundText, cfg.match);
+    if (idx >= 0) {
+      const text = renderFirstReply(cfg, name, product);
+      if (text) return { text, media: null, rule: -1, idx };
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +337,8 @@ export interface FirstReplyEntry {
   peer: string;
   senderName: string | null;
   inbound: { text: string; ts: string; waMessageId: string; referral?: FirstReplyReferral };
-  reply: { text: string; ts: string; waMessageId?: string };
+  /** `media` is the photo sent with the text, when a rule had one. */
+  reply: { text: string; ts: string; waMessageId?: string; media?: string };
   /** ISO timestamp of the message that woke the model, or null while nobody came back. */
   continuedAt: string | null;
   /** The OpenClaw session this peer's conversation will use, so sync can pair the two. */
@@ -362,7 +456,9 @@ export function buildHistoryBody(
     `<<<user ${entry.inbound.ts}>>>`,
     entry.inbound.text,
     `<<<assistant ${entry.reply.ts}>>>`,
-    entry.reply.text,
+    // The photo is replayed the way the model writes its own: a MEDIA line.
+    // The platform lifts it into the bubble's media_file.
+    entry.reply.media ? `${entry.reply.text}\nMEDIA:${entry.reply.media}` : entry.reply.text,
     HISTORY_CLOSE,
   ];
   return `${lines.join("\n")}\n${newText}`;

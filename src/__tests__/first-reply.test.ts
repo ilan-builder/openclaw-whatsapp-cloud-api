@@ -14,6 +14,7 @@ import {
   maskPeer,
   matchIndex,
   normalizeForMatch,
+  pickFirstReply,
   readEntry,
   renderFirstReply,
   resolveFirstReply,
@@ -330,5 +331,81 @@ describe("clearEntry", () => {
   it("is a no-op for a peer with no state", async () => {
     const cfg = resolveFirstReply({ stateDir: dir });
     expect(await clearEntry(cfg, "972500000000")).toBe(false);
+  });
+});
+
+describe("rules (one canned reply per opener)", () => {
+  const AD = "היי, אשמח לקבל פרטים על מטבח חוץ.";
+  const PHOTO = "/home/node/.openclaw/workspace/product-images/toscana-pro-black.jpg";
+  const raw = {
+    enabled: true,
+    match: [PREFILL],
+    text: "",
+    rules: [
+      {
+        match: [AD],
+        text: "היי{name_comma} אני נועה 😊\nטוסקנה פרו\n\nאיפה חשבתם למקם את המטבח?",
+        media: PHOTO,
+      },
+      { match: ["empty rule"], text: "   " },
+    ],
+  };
+
+  it("makes the config usable with no generic text", () => {
+    const cfg = resolveFirstReply(raw);
+    expect(firstReplyUsable(cfg)).toBe(true);
+    expect(firstReplyStatus(cfg).active).toBe(true);
+    expect(firstReplyStatus(cfg).line).toContain("1 rule(s), 0 generic");
+  });
+
+  it("answers the rule's opener with its text and photo", () => {
+    const cfg = resolveFirstReply(raw);
+    const pick = pickFirstReply(cfg, `\u200F${AD} `, "יובל", null);
+    expect(pick).toEqual({
+      text: "היי יובל, אני נועה 😊\nטוסקנה פרו\n\nאיפה חשבתם למקם את המטבח?",
+      media: PHOTO,
+      rule: 0,
+      idx: 0,
+    });
+  });
+
+  it("falls back to textNoName = text without a name", () => {
+    const pick = pickFirstReply(resolveFirstReply(raw), AD, null, null);
+    expect(pick?.text.startsWith("היי, אני נועה")).toBe(true);
+  });
+
+  it("leaves every other message to the model", () => {
+    const cfg = resolveFirstReply(raw);
+    expect(pickFirstReply(cfg, PREFILL, "יובל", null)).toBeNull(); // generic text is empty
+    expect(pickFirstReply(cfg, `${AD} כמה עולה?`, "יובל", null)).toBeNull();
+    expect(pickFirstReply(cfg, "empty rule", "יובל", null)).toBeNull();
+  });
+
+  it("keeps the generic match/text working beside rules", () => {
+    const cfg = resolveFirstReply({ ...raw, text: "שלום{name_comma}" });
+    expect(pickFirstReply(cfg, PREFILL, "דנה", null)).toEqual({
+      text: "שלום דנה,",
+      media: null,
+      rule: -1,
+      idx: 0,
+    });
+  });
+
+  it("is unchanged for a config without rules", () => {
+    const cfg = resolveFirstReply({ enabled: true, match: [PREFILL], text: "hi" });
+    expect(cfg.rules).toEqual([]);
+    expect(pickFirstReply(cfg, PREFILL, null, null)?.text).toBe("hi");
+  });
+
+  it("replays the photo as a MEDIA line after the reply text", () => {
+    const entry: FirstReplyEntry = {
+      peer: "972500000000",
+      senderName: "יובל",
+      inbound: { text: AD, ts: "2026-10-26T18:00:00.000Z" },
+      reply: { text: "היי יובל", ts: "2026-10-26T18:00:02.000Z", media: PHOTO },
+      continuedAt: null,
+      sessionKey: "k",
+    };
+    expect(buildHistoryBody(entry, "כמה עולה?", "preamble")).toContain(`היי יובל\nMEDIA:${PHOTO}`);
   });
 });
