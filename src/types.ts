@@ -48,6 +48,8 @@ export interface WhatsAppCloudConfig {
   block: BlockConfig;
   /** Ad → product rules, edited by the client. Read into `referral.products`. */
   referralProducts: ReferralProductRule[];
+  /** One prompt_cache_key for every conversation of this agent; "" = OpenClaw's per-session key (PinkLime fork). */
+  promptCacheKey: string;
 }
 
 /** Defaults applied when config values are missing */

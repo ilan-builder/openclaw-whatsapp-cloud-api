@@ -14,6 +14,7 @@ import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
 import { mintFlowToken, verifyFlowToken } from "./crypto.js";
 import { extractDirectives } from "./directives.js";
 import { mediaUrlsFromPayload, saveInboundMedia, sendOutboundMedia } from "./media.js";
+import { promptCacheReplyOptions, resolvePromptCacheKey } from "./prompt-cache.js";
 import { startWebhookServer } from "./webhook.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
@@ -156,6 +157,7 @@ function resolveConfig(cfg: any): WhatsAppCloudConfig {
     referral: resolveReferral(raw.referral, raw.referralProducts),
     block: resolveBlock(raw.block),
     referralProducts: Array.isArray(raw.referralProducts) ? raw.referralProducts : [],
+    promptCacheKey: resolvePromptCacheKey(raw.promptCacheKey),
   };
 }
 
@@ -869,9 +871,13 @@ const whatsappCloudChannel = {
             const verdict: { hit: boolean; reason: string | null } = { hit: false, reason: null };
 
             // Dispatch via OpenClaw's reply system
+            // One cache key per agent, so a new conversation reuses the cached
+            // system prompt. See prompt-cache.ts. No key = OpenClaw's default.
+            const cacheOptions = promptCacheReplyOptions(resolveConfig(freshCfg).promptCacheKey);
             await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
               ctx: msgCtx,
               cfg: freshCfg,
+              ...(cacheOptions.promptCacheKey ? { replyOptions: cacheOptions } : {}),
               dispatcherOptions: {
                 deliver: async (payload: any) => {
                   if (blk.enabled) {
