@@ -9,7 +9,7 @@
 // License: MIT
 // ---------------------------------------------------------------------------
 
-import { isSlashCommand, shouldDropUnauthorizedCommand } from "./command-gate.js";
+import { isSlashCommand, shouldDropRuntimeNotice, shouldDropUnauthorizedCommand } from "./command-gate.js";
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
 import { mintFlowToken, verifyFlowToken } from "./crypto.js";
@@ -439,6 +439,13 @@ const whatsappCloudChannel = {
         throw new Error("WhatsApp Cloud API not configured: missing accessToken or phoneNumberId");
       }
 
+      // OpenClaw 2026.10 restart-recovery notices ("use /new or /reset …") are
+      // for operators, never for a customer. See command-gate.ts.
+      if (shouldDropRuntimeNotice(cfg, to, text)) {
+        log.info(`[command-gate] dropped a runtime recovery notice to ${maskPeer(to)} — not on commands.allowFrom`);
+        return { channel: "whatsapp-cloud" as any, messageId: "suppressed:runtime-notice", chatId: to };
+      }
+
       const result = await deliverText(config, to, text, log);
 
       if (result && !result.ok) {
@@ -479,6 +486,10 @@ const whatsappCloudChannel = {
       }
 
       // Fallback to text if no media URL
+      if (shouldDropRuntimeNotice(cfg, to, text)) {
+        log.info(`[command-gate] dropped a runtime recovery notice to ${maskPeer(to)} — not on commands.allowFrom`);
+        return { channel: "whatsapp-cloud" as any, messageId: "suppressed:runtime-notice", chatId: to };
+      }
       const result = await sendText(config, to, text, log);
       if (!result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);

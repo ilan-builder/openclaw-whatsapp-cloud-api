@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { isSlashCommand, shouldDropUnauthorizedCommand } from "../command-gate.js";
+import {
+  isRuntimeRecoveryNotice,
+  isSlashCommand,
+  shouldDropRuntimeNotice,
+  shouldDropUnauthorizedCommand,
+} from "../command-gate.js";
 
 const OPERATOR = "972543343052";
 const CUSTOMER = "972501111111";
@@ -56,5 +61,34 @@ describe("shouldDropUnauthorizedCommand", () => {
 
   it("does not restrict when no allowFrom list exists for the channel", () => {
     expect(shouldDropUnauthorizedCommand({}, text(CUSTOMER, "/new"))).toBe(false);
+  });
+});
+
+describe("runtime recovery notices (OpenClaw 2026.10)", () => {
+  // Verbatim from openclaw@2026.10.10 dist (main-session-restart-recovery, execution).
+  const TOMBSTONE =
+    "I couldn't continue this session after a gateway restart: the run could not be resumed. Your transcript is safe. In WebChat, use Resume in new session to continue it; in other channels, use /new or /reset to start a replacement session.";
+  const PENDING =
+    "I couldn’t confirm whether my previous reply reached this chat, so I won’t resend it automatically. Please ask for any missing remainder.";
+
+  it("recognises both notices and nothing a bot would normally say", () => {
+    expect(isRuntimeRecoveryNotice(TOMBSTONE)).toBe(true);
+    expect(isRuntimeRecoveryNotice(PENDING)).toBe(true);
+    expect(isRuntimeRecoveryNotice("שלום! איך אפשר לעזור?")).toBe(false);
+    expect(isRuntimeRecoveryNotice("Use /new to start over")).toBe(false);
+    expect(isRuntimeRecoveryNotice("")).toBe(false);
+    expect(isRuntimeRecoveryNotice(undefined)).toBe(false);
+  });
+
+  it("drops them for a customer, keeps them for an operator", () => {
+    expect(shouldDropRuntimeNotice(cfg, CUSTOMER, TOMBSTONE)).toBe(true);
+    expect(shouldDropRuntimeNotice(cfg, CUSTOMER, PENDING)).toBe(true);
+    expect(shouldDropRuntimeNotice(cfg, OPERATOR, TOMBSTONE)).toBe(false);
+    expect(shouldDropRuntimeNotice(cfg, "+972 50-721-6963", TOMBSTONE)).toBe(false);
+    expect(shouldDropRuntimeNotice(cfg, CUSTOMER, "תודה, נחזור אליך")).toBe(false);
+  });
+
+  it("with no commands.allowFrom list everyone is an operator (as the runtime treats it)", () => {
+    expect(shouldDropRuntimeNotice({}, CUSTOMER, TOMBSTONE)).toBe(false);
   });
 });

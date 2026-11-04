@@ -29,3 +29,39 @@ export function shouldDropUnauthorizedCommand(
   if (!isSlashCommand(message.text)) return false;
   return !commandsAllowedFrom(cfg, message.from, channel);
 }
+
+// ---------------------------------------------------------------------------
+// Runtime recovery notices (OpenClaw 2026.10.x)
+// ---------------------------------------------------------------------------
+
+/**
+ * English operator notices the OpenClaw 2026.10 gateway sends on its own after
+ * a restart (src/agents/main-session-recovery, src/channels/turn/
+ * pending-delivery-notice in openclaw@2026.10.10). They go out through this
+ * channel's outbound adapter like any reply:
+ *   - the restart-recovery tombstone: "I couldn't continue this session after a
+ *     gateway restart: … in other channels, use /new or /reset to start a
+ *     replacement session."
+ *   - the pending-delivery notice: "I couldn’t confirm whether my previous
+ *     reply reached this chat, so I won’t resend it automatically. …"
+ * A customer can't act on either: the /new hint names a command this channel
+ * drops for them (above), and both are English operator text. They still reach
+ * whoever is on `commands.allowFrom`.
+ */
+const RUNTIME_NOTICE_PATTERNS: RegExp[] = [
+  /^I couldn['’]t continue this session after a gateway restart:/,
+  /^I couldn['’]t confirm whether my previous reply reached this chat\b/,
+  /\buse \/new or \/reset\b/,
+];
+
+/** True when the text is one of the gateway's own recovery notices. */
+export function isRuntimeRecoveryNotice(text: unknown): boolean {
+  const s = String(text ?? "").trim();
+  return s.length > 0 && RUNTIME_NOTICE_PATTERNS.some((re) => re.test(s));
+}
+
+/** True when an outbound text must not be sent to this peer. */
+export function shouldDropRuntimeNotice(cfg: any, to: string, text: unknown, channel = "whatsapp-cloud"): boolean {
+  if (!isRuntimeRecoveryNotice(text)) return false;
+  return !commandsAllowedFrom(cfg, to, channel);
+}
