@@ -9,6 +9,7 @@
 // License: MIT
 // ---------------------------------------------------------------------------
 
+import { isSlashCommand, shouldDropUnauthorizedCommand } from "./command-gate.js";
 import type { Server } from "node:http";
 import { sendText, sendMedia, sendTypingIndicator, sendFlow } from "./api.js";
 import { mintFlowToken, verifyFlowToken } from "./crypto.js";
@@ -532,6 +533,25 @@ const whatsappCloudChannel = {
         config,
         // Inbound message handler — dispatch into OpenClaw agent session
         async (message) => {
+          // Unauthorized slash commands (PinkLime fork). A "/new" from a customer
+          // not on commands.allowFrom is ignored by the runtime, which then sends
+          // its "couldn't produce or deliver a reply" fallback. Drop it here, before
+          // the typing indicator and before dispatch. A blocked peer is handled by
+          // the block path below. See command-gate.ts.
+          if (!message.blocked && message.type === "text" && isSlashCommand(message.text)) {
+            try {
+              const gateCfg = await loadRuntimeConfig(runtime);
+              if (shouldDropUnauthorizedCommand(gateCfg, message)) {
+                log.debug?.(
+                  `[command-gate] dropped ${String(message.text).trim().split(/\s+/)[0]} from ${maskPeer(message.from)} — not on commands.allowFrom`
+                );
+                return;
+              }
+            } catch (err) {
+              log.error(`[command-gate] config load failed, dropping command from ${maskPeer(message.from)}: ${err}`);
+              return;
+            }
+          }
           // Reply pacing (PinkLime fork). The clock starts here, when the customer
           // pressed send, so the wait covers model generation instead of adding to it.
           const rhythm = config.humanRhythm;
