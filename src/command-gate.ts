@@ -44,7 +44,13 @@ export function shouldDropUnauthorizedCommand(
  *     replacement session."
  *   - the pending-delivery notice: "I couldn’t confirm whether my previous
  *     reply reached this chat, so I won’t resend it automatically. …"
- * A customer can't act on either: the /new hint names a command this channel
+ *   - the resume notice, sent when an interrupted turn is re-run after an
+ *     unclean restart: "I'm continuing your interrupted request now (the
+ *     gateway has just restarted). …" (seen live on 2026.10.10; the re-run
+ *     reply itself still goes out normally)
+ *   - the could-not-resume notice: "This interrupted turn could not resume
+ *     after the Gateway restarted: …"
+ * A customer can't act on any of them: the /new hint names a command this channel
  * drops for them (above), and both are English operator text. They still reach
  * whoever is on `commands.allowFrom`.
  */
@@ -52,6 +58,8 @@ const RUNTIME_NOTICE_PATTERNS: RegExp[] = [
   /^I couldn['’]t continue this session after a gateway restart:/,
   /^I couldn['’]t confirm whether my previous reply reached this chat\b/,
   /\buse \/new or \/reset\b/,
+  /^I['’]m continuing your interrupted request now\b/,
+  /^This interrupted turn could not resume after the Gateway restarted\b/,
 ];
 
 /** True when the text is one of the gateway's own recovery notices. */

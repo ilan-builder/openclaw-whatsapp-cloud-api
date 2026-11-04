@@ -70,10 +70,17 @@ describe("runtime recovery notices (OpenClaw 2026.10)", () => {
     "I couldn't continue this session after a gateway restart: the run could not be resumed. Your transcript is safe. In WebChat, use Resume in new session to continue it; in other channels, use /new or /reset to start a replacement session.";
   const PENDING =
     "I couldn’t confirm whether my previous reply reached this chat, so I won’t resend it automatically. Please ask for any missing remainder.";
+  const RESUMING =
+    "I'm continuing your interrupted request now (the gateway has just restarted).  Don't be concerned with the lack of typing; I am working behind the scenes and I'll send a message when I'm done!";
+  const NO_RESUME =
+    "This interrupted turn could not resume after the Gateway restarted: timeout. Your session and transcript are preserved. Send a new authenticated message to continue.";
 
   it("recognises both notices and nothing a bot would normally say", () => {
     expect(isRuntimeRecoveryNotice(TOMBSTONE)).toBe(true);
     expect(isRuntimeRecoveryNotice(PENDING)).toBe(true);
+    expect(isRuntimeRecoveryNotice(RESUMING)).toBe(true);
+    expect(isRuntimeRecoveryNotice(NO_RESUME)).toBe(true);
+    expect(isRuntimeRecoveryNotice("I'm continuing to look into that for you")).toBe(false);
     expect(isRuntimeRecoveryNotice("שלום! איך אפשר לעזור?")).toBe(false);
     expect(isRuntimeRecoveryNotice("Use /new to start over")).toBe(false);
     expect(isRuntimeRecoveryNotice("")).toBe(false);
@@ -83,6 +90,9 @@ describe("runtime recovery notices (OpenClaw 2026.10)", () => {
   it("drops them for a customer, keeps them for an operator", () => {
     expect(shouldDropRuntimeNotice(cfg, CUSTOMER, TOMBSTONE)).toBe(true);
     expect(shouldDropRuntimeNotice(cfg, CUSTOMER, PENDING)).toBe(true);
+    expect(shouldDropRuntimeNotice(cfg, CUSTOMER, RESUMING)).toBe(true);
+    expect(shouldDropRuntimeNotice(cfg, CUSTOMER, NO_RESUME)).toBe(true);
+    expect(shouldDropRuntimeNotice(cfg, OPERATOR, RESUMING)).toBe(false);
     expect(shouldDropRuntimeNotice(cfg, OPERATOR, TOMBSTONE)).toBe(false);
     expect(shouldDropRuntimeNotice(cfg, "+972 50-721-6963", TOMBSTONE)).toBe(false);
     expect(shouldDropRuntimeNotice(cfg, CUSTOMER, "תודה, נחזור אליך")).toBe(false);
