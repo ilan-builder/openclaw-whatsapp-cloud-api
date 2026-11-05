@@ -959,6 +959,11 @@ const whatsappCloudChannel = {
             // body as the final gate, so this is not the only line of defence.
             // ---------------------------------------------------------------
             const leak: { hit: boolean; reason: string | null; text: string } = { hit: false, reason: null, text: "" };
+            // Snapshot BEFORE the dispatch: the runtime finalizes msgCtx in place
+            // (derived prompt fields, private Symbol keys such as the channel
+            // source-turn id). A retry built from the mutated object re-sends the
+            // customer text, or is skipped as a duplicate turn.
+            const msgCtxBase: Record<string, any> = { ...msgCtx };
             const leakGate = (payload: any, state: typeof leak): boolean => {
               if (state.hit) return true;
               const v = classifyOutboundText(payload?.text ?? "");
@@ -1016,7 +1021,7 @@ const whatsappCloudChannel = {
               let delivered = 0;
               const retryBody = buildLeakRetryBody(leak.reason);
               const retryCtx: Record<string, any> = {
-                ...msgCtx,
+                ...msgCtxBase,
                 Body: retryBody,
                 RawBody: retryBody,
                 CommandBody: retryBody,
@@ -1025,6 +1030,12 @@ const whatsappCloudChannel = {
                 MessageSid: `${message.messageId}:leak-retry`,
               };
               for (const k of ["MediaPath", "MediaPaths", "MediaContentType", "MediaType", "NumMedia", "ReplyToId"]) delete retryCtx[k];
+              if (retryCtx.MessageSidFull) retryCtx.MessageSidFull = `${retryCtx.MessageSidFull}:leak-retry`;
+              // The first dispatch stamps private Symbol keys on msgCtx (the
+              // channel source-turn id among them). The spread copies them, and
+              // OpenClaw then skips the retry as a duplicate of the turn that
+              // just ran. Drop them so the retry is its own turn.
+              for (const sym of Object.getOwnPropertySymbols(retryCtx)) delete retryCtx[sym as any];
               try {
                 await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
                   ctx: retryCtx,
