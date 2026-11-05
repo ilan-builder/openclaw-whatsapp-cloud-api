@@ -305,6 +305,8 @@ export interface SendResult {
   ok: boolean;
   messageId?: string;
   error?: string;
+  /** True when the leak guard withheld the message (nothing reached Meta). */
+  blocked?: boolean;
 }
 
 export interface UploadResult {

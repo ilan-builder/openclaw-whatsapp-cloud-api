@@ -18,6 +18,7 @@ import type {
   UploadResult,
   Logger,
 } from "./types.js";
+import { classifyOutboundText, outboundBodyVerdict, recordLeak } from "./leak-guard.js";
 
 const API_BASE = "https://graph.facebook.com";
 
@@ -42,6 +43,30 @@ async function sendRequest(
   log: Logger
 ): Promise<SendResult> {
   const url = apiUrl(config, `${config.phoneNumberId}/messages`);
+
+  // THE final gate (see leak-guard.ts). Every message body bound for Meta comes
+  // through here, and this check sits in front of the only fetch that POSTs
+  // one. A body the guard flags, cannot read, or does not recognise is never
+  // sent. Fail-closed: outboundBodyVerdict() returns leak=true on any error,
+  // and if even that somehow throws, the catch below blocks as well.
+  let verdict: { leak: boolean; reason: string | null };
+  try {
+    verdict = outboundBodyVerdict(body);
+  } catch {
+    verdict = { leak: true, reason: "guard-error" };
+  }
+  if (verdict.leak) {
+    const to = String((body as any)?.to ?? "");
+    try {
+      const masked = to.length > 5 ? `${to.slice(0, 4)}******${to.slice(-2)}` : "?";
+      log.error(
+        `[leak-guard] BLOCKED outbound ${String((body as any)?.type)} to ${masked} (${verdict.reason}) — nothing was sent to Meta`
+      );
+      const b = body as any;
+      recordLeak({ stage: "final-gate", reason: verdict.reason, to, text: b?.text?.body ?? b?.[String(b?.type)]?.caption ?? "" });
+    } catch { /* logging/alerting must never turn a block into a send */ }
+    return { ok: false, blocked: true, error: `blocked by leak guard (${verdict.reason})` };
+  }
 
   try {
     const response = await fetch(url, {
@@ -77,6 +102,18 @@ export async function sendText(
   text: string,
   log: Logger
 ): Promise<SendResult> {
+  // Leak guard: judge the WHOLE text before the 4096-char split, so a JSON
+  // blob cut into chunks is withheld as one (every chunk is checked again in
+  // sendRequest). Fail-closed: a leak verdict or an error sends nothing.
+  const whole = classifyOutboundText(text);
+  if (whole.leak) {
+    try {
+      log.error(`[leak-guard] BLOCKED outbound text to ${to.length > 5 ? `${to.slice(0, 4)}******${to.slice(-2)}` : "?"} (${whole.reason}) — nothing was sent to Meta`);
+      recordLeak({ stage: "final-gate", reason: whole.reason, to, text });
+    } catch { /* never turn a block into a send */ }
+    return { ok: false, blocked: true, error: `blocked by leak guard (${whole.reason})` };
+  }
+
   // WhatsApp has a 4096 character limit per text message
   // Split long messages into chunks
   const chunks = splitMessage(text, 4096);
