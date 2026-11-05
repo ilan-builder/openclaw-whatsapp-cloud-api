@@ -17,6 +17,7 @@ import { extractDirectives } from "./directives.js";
 import { mediaUrlsFromPayload, saveInboundMedia, sendOutboundMedia } from "./media.js";
 import { promptCacheReplyOptions, resolvePromptCacheKey } from "./prompt-cache.js";
 import { startWebhookServer } from "./webhook.js";
+import { buildLeakRetryBody, classifyOutboundText, recordLeak } from "./leak-guard.js";
 import { runSetupWizard, validateConfig } from "./setup.js";
 import { whatsappCloudOnboardingAdapter } from "./onboarding.js";
 import type { WhatsAppCloudConfig, Logger } from "./types.js";
@@ -174,6 +175,22 @@ function resolveAccount(cfg: any, accountId?: string | null): ResolvedWhatsAppCl
   };
 }
 
+type DeliverResult = { ok: boolean; messageId?: string; error?: string; blocked?: boolean };
+
+// Leak guard, whole-text check BEFORE a reply is split into WhatsApp parts.
+// sendRequest() (api.ts) checks every part again; this one exists because a
+// single fragment of a JSON blob (a line like `],`) can look harmless alone.
+// A blocked reply sends nothing at all: no parts, no media, no flows.
+function wholeReplyBlocked(text: string, to: string, log: Logger): DeliverResult | null {
+  const v = classifyOutboundText(text);
+  if (!v.leak) return null;
+  try {
+    log.error(`[leak-guard] BLOCKED reply to ${maskPeer(to)} before splitting (${v.reason}) — nothing was sent to Meta`);
+    recordLeak({ stage: "final-gate", reason: v.reason, to, text });
+  } catch { /* never turn a block into a send */ }
+  return { ok: false, blocked: true, error: `blocked by leak guard (${v.reason})` };
+}
+
 // PinkLime fork: deliver reply text honoring trailing directives (FLOW: <name>).
 async function deliverText(
   config: WhatsAppCloudConfig,
@@ -181,17 +198,21 @@ async function deliverText(
   text: string,
   log: Logger,
   pacer?: ReplyPacer
-): Promise<{ ok: boolean; messageId?: string; error?: string } | null> {
+): Promise<DeliverResult | null> {
+  const blockedWhole = wholeReplyBlocked(text, to, log);
+  if (blockedWhole) return blockedWhole;
   const { text: clean, flows } = extractDirectives(text);
-  let result: { ok: boolean; messageId?: string; error?: string } | null = null;
+  let result: DeliverResult | null = null;
   if (clean) {
     // One reply written as two paragraphs is two WhatsApp messages, sent with a
     // gap, the way a person texts. Without a pacer it stays one message.
     const parts = pacer ? splitIntoParts(clean, config.humanRhythm) : [clean];
-    let lastSent: { ok: boolean; messageId?: string; error?: string } | null = null;
+    let lastSent: DeliverResult | null = null;
     for (const part of parts) {
       await pacer?.beforeSend();
       const sent = await sendText(config, to, part, log);
+      // A part the final gate blocked ends the reply here: nothing after it.
+      if (sent.blocked) return sent;
       result = result ?? sent;
       lastSent = sent;
     }
@@ -232,15 +253,21 @@ async function deliverTurn(
   mediaUrls: string[],
   log: Logger,
   pacer?: ReplyPacer
-): Promise<{ ok: boolean; messageId?: string; error?: string } | null> {
+): Promise<DeliverResult | null> {
+  const blockedWhole = wholeReplyBlocked(text, to, log);
+  if (blockedWhole) return blockedWhole;
   const { text: clean, flows } = extractDirectives(text);
   const parts = clean ? (pacer ? splitIntoParts(clean, config.humanRhythm) : [clean]) : [];
   const { before, after } = textAroundMedia(parts, mediaUrls.length > 0);
-  let result: { ok: boolean; messageId?: string; error?: string } | null = null;
+  let result: DeliverResult | null = null;
+  let blocked: DeliverResult | null = null;
   const textSend = { count: 0, ok: false, messageId: "" };
   const sendOne = async (part: string) => {
+    if (blocked) return;
     await pacer?.beforeSend();
     const sent = await sendText(config, to, part, log);
+    // A part the final gate blocked ends the turn: no later part, photo or flow.
+    if (sent.blocked) { blocked = sent; return; }
     result = result ?? sent;
     textSend.count += 1;
     textSend.ok = sent.ok;
@@ -248,11 +275,14 @@ async function deliverTurn(
   };
   for (const part of before) await sendOne(part);
   for (const url of mediaUrls) {
+    if (blocked) break;
     await pacer?.beforeSend();
     const sent = await sendOutboundMedia(config, to, url, undefined, log);
+    if ((sent as DeliverResult).blocked) { blocked = sent as DeliverResult; break; }
     if (!sent.ok) log.error(`[whatsapp-cloud] Media send failed (${url}): ${sent.error}`);
   }
   for (const part of after) await sendOne(part);
+  if (blocked) return blocked;
   if (textSend.ok) {
     const masked = maskPeer(to);
     log.info(
@@ -448,6 +478,12 @@ const whatsappCloudChannel = {
 
       const result = await deliverText(config, to, text, log);
 
+      // The leak guard withheld it (api.ts sendRequest). Report a suppression,
+      // not a failure: a thrown error can make the runtime send its own
+      // "couldn't deliver" fallback, and the customer must get nothing here.
+      if (result && (result as any).blocked) {
+        return { channel: "whatsapp-cloud" as any, messageId: "suppressed:leak-guard", chatId: to };
+      }
       if (result && !result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);
       }
@@ -475,6 +511,9 @@ const whatsappCloudChannel = {
 
       if (mediaUrl) {
         const result = await sendOutboundMedia(config, to, mediaUrl, text || undefined, log);
+        if ((result as any).blocked) {
+          return { channel: "whatsapp-cloud" as any, messageId: "suppressed:leak-guard", chatId: to };
+        }
         if (!result.ok) {
           throw new Error(`WhatsApp Cloud API media send failed: ${result.error}`);
         }
@@ -491,6 +530,9 @@ const whatsappCloudChannel = {
         return { channel: "whatsapp-cloud" as any, messageId: "suppressed:runtime-notice", chatId: to };
       }
       const result = await sendText(config, to, text, log);
+      if (result.blocked) {
+        return { channel: "whatsapp-cloud" as any, messageId: "suppressed:leak-guard", chatId: to };
+      }
       if (!result.ok) {
         throw new Error(`WhatsApp Cloud API send failed: ${result.error}`);
       }
@@ -905,12 +947,38 @@ const whatsappCloudChannel = {
             // One cache key per agent, so a new conversation reuses the cached
             // system prompt. See prompt-cache.ts. No key = OpenClaw's default.
             const cacheOptions = promptCacheReplyOptions(resolveConfig(freshCfg).promptCacheKey);
+
+            // ---------------------------------------------------------------
+            // Reply leak guard — the turn-level check (PinkLime fork)
+            //
+            // Each payload is classified BEFORE it is split or sent. Once one
+            // is flagged, nothing else leaves for the rest of the turn (no
+            // text, no media), the model is re-prompted ONCE, and a second
+            // leak sends nothing and records an alert for the watchdog
+            // (Pinklime-CEO). api.ts sendRequest() repeats the check on every
+            // body as the final gate, so this is not the only line of defence.
+            // ---------------------------------------------------------------
+            const leak: { hit: boolean; reason: string | null; text: string } = { hit: false, reason: null, text: "" };
+            const leakGate = (payload: any, state: typeof leak): boolean => {
+              if (state.hit) return true;
+              const v = classifyOutboundText(payload?.text ?? "");
+              if (!v.leak) return false;
+              state.hit = true;
+              state.reason = v.reason;
+              state.text = String(payload?.text ?? "");
+              log.warn(
+                `[leak-guard] withheld a reply to ${maskPeer(message.from)} (${v.reason}) — tool call or code written as text; nothing sent`
+              );
+              return true;
+            };
+
             await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
               ctx: msgCtx,
               cfg: freshCfg,
               ...(cacheOptions.promptCacheKey ? { replyOptions: cacheOptions } : {}),
               dispatcherOptions: {
                 deliver: async (payload: any) => {
+                  if (leakGate(payload, leak)) return;
                   if (blk.enabled) {
                     if (!verdict.hit) {
                       const marked = payloadHasMarker(payload, blk.marker);
@@ -938,6 +1006,56 @@ const whatsappCloudChannel = {
                 },
               },
             });
+
+            // One re-prompt after a leaked turn. Same session, same peer; the
+            // body is a marked system notice the dashboard strips. Its replies go
+            // through the same gate. No third attempt.
+            if (leak.hit && !verdict.hit) {
+              recordLeak({ stage: "turn", reason: leak.reason, to: message.from, text: leak.text, sessionKey, messageId: message.messageId });
+              const retry: { hit: boolean; reason: string | null; text: string } = { hit: false, reason: null, text: "" };
+              let delivered = 0;
+              const retryBody = buildLeakRetryBody(leak.reason);
+              const retryCtx: Record<string, any> = {
+                ...msgCtx,
+                Body: retryBody,
+                RawBody: retryBody,
+                CommandBody: retryBody,
+                BodyForCommands: retryBody,
+                BodyForAgent: retryBody,
+                MessageSid: `${message.messageId}:leak-retry`,
+              };
+              for (const k of ["MediaPath", "MediaPaths", "MediaContentType", "MediaType", "NumMedia", "ReplyToId"]) delete retryCtx[k];
+              try {
+                await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+                  ctx: retryCtx,
+                  cfg: freshCfg,
+                  ...(cacheOptions.promptCacheKey ? { replyOptions: cacheOptions } : {}),
+                  dispatcherOptions: {
+                    deliver: async (payload: any) => {
+                      if (leakGate(payload, retry)) return;
+                      if (blk.enabled && payloadHasMarker(payload, blk.marker).found) return;
+                      const urls = mediaUrlsFromPayload(payload);
+                      if (payload.text || urls.length > 0) {
+                        await deliverTurn(config, message.from, payload.text ?? "", urls, log, pacer);
+                        delivered += 1;
+                      }
+                    },
+                  },
+                });
+              } catch (err) {
+                retry.hit = true;
+                retry.reason = retry.reason ?? `retry-error: ${String(err).slice(0, 120)}`;
+              }
+              if (retry.hit || delivered === 0) {
+                log.error(
+                  `[leak-guard] retry for ${maskPeer(message.from)} did not produce a sendable reply (${retry.reason ?? "empty"}) — customer got nothing; alerting`
+                );
+                recordLeak({ stage: "retry-failed", reason: retry.reason ?? "empty-retry", to: message.from, text: retry.text || leak.text, sessionKey, messageId: message.messageId });
+              } else {
+                log.info(`[leak-guard] retry for ${maskPeer(message.from)} delivered ${delivered} payload(s)`);
+                recordLeak({ stage: "retried-ok", reason: leak.reason, to: message.from, text: leak.text, sessionKey, messageId: message.messageId });
+              }
+            }
 
             // The turn is over and the customer got nothing. Write the block, so
             // the NEXT message from this number is dropped in webhook.ts, before
@@ -1255,6 +1373,8 @@ const plugin = {
 };
 
 export default plugin;
+// Exported for tests (outbound adapter + leak guard). Not part of the plugin API.
+export const _outboundForTests: any = whatsappCloudChannel.outbound;
 
 // ---------------------------------------------------------------------------
 // Re-exports
