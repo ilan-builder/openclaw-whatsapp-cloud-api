@@ -153,6 +153,11 @@ describe("renderFirstReply", () => {
     expect(renderFirstReply(cfg, "אילן")).toBe("היי אילן, בשמחה 🙂\n\nכאן מאיה.");
   });
 
+  it("transliterates a Latin name in a Hebrew greeting", () => {
+    expect(renderFirstReply(cfg, "Ilan")).toBe("היי אילן, בשמחה 🙂\n\nכאן מאיה.");
+    expect(renderFirstReply(cfg, "David")).toBe("היי דוד, בשמחה 🙂\n\nכאן מאיה.");
+  });
+
   it("uses the no-name text when there is no usable name", () => {
     expect(renderFirstReply(cfg, null)).toBe("היי, בשמחה 🙂\n\nאיך קוראים לך?");
   });

@@ -18,6 +18,7 @@
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { hebrewGreetingName } from "./hebrew-name.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -272,13 +273,18 @@ function renderTemplate(
   // An empty render is never sent — the caller falls through to the model.
   const withName = primary.trim() ? primary : secondary;
   const withoutName = secondary.trim() ? secondary : primary;
-  const template = name ? withName : withoutName;
+  // A Latin name in a Hebrew greeting flips the line to LTR on WhatsApp.
+  // Transliterate when we can; if the spelling is uncertain, omit the name.
+  const display =
+    name && /[\u0590-\u05FF]/.test(withName) ? hebrewGreetingName(name) : name;
+  const template = display ? withName : withoutName;
   return template
-    .replace(/\{name_comma\}/g, name ? ` ${name},` : ",")
-    .replace(/\{name\}/g, name ?? "")
+    .replace(/\{name_comma\}/g, display ? ` ${display},` : ",")
+    .replace(/\{name\}/g, display ?? "")
     .replace(/\{product\}/g, product?.name ?? "")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
+
 }
 
 export interface FirstReplyPick {

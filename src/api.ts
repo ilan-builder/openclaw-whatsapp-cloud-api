@@ -19,6 +19,7 @@ import type {
   Logger,
 } from "./types.js";
 import { classifyOutboundText, outboundBodyVerdict, recordLeak } from "./leak-guard.js";
+import { ensureWhatsAppRtl } from "./whatsapp-rtl.js";
 
 const API_BASE = "https://graph.facebook.com";
 
@@ -114,9 +115,19 @@ export async function sendText(
     return { ok: false, blocked: true, error: `blocked by leak guard (${whole.reason})` };
   }
 
+  // RTL marks go on the wire only. The leak guard judged the original, and
+  // callers keep the unmarked text for session logs and the dashboard.
+  const wire = ensureWhatsAppRtl(text);
+  if (wire !== text) {
+    const added = [...wire].filter((c) => c === "\u200F").length
+      - [...text].filter((c) => c === "\u200F").length;
+    const toSafe = to.length > 5 ? `${to.slice(0, 4)}******${to.slice(-2)}` : "?";
+    log.info(`[whatsapp-cloud] rtl-marked outbound text to ${toSafe} (+${added} RLM)`);
+  }
+
   // WhatsApp has a 4096 character limit per text message
   // Split long messages into chunks
-  const chunks = splitMessage(text, 4096);
+  const chunks = splitMessage(wire, 4096);
   let lastResult: SendResult = { ok: false, error: "No chunks" };
 
   for (const chunk of chunks) {

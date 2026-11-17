@@ -117,6 +117,26 @@ describe("sendText", () => {
     expect(result.ok).toBe(true);
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
+
+  it("marks a Hebrew body with RLM on the wire and leaves English alone", async () => {
+    const config = makeConfig();
+    mockApiSuccess();
+    const text = "יש אצלנו מכינה קדם-אקדמית, Ilan";
+    const result = await sendText(config, "972543343052", text, mockLog);
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.text.body.startsWith("\u200F")).toBe(true);
+    expect(body.text.body.endsWith("Ilan\u200F")).toBe(true);
+    expect(body.text.body).not.toBe(text);
+    expect(mockLog.info).toHaveBeenCalledWith(
+      expect.stringMatching(/rtl-marked outbound text to 9725\*+52 \(\+\d+ RLM\)/)
+    );
+
+    mockApiSuccess();
+    await sendText(config, "972543343052", "Hello Ilan", mockLog);
+    const en = JSON.parse(mockFetch.mock.calls[1][1].body);
+    expect(en.text.body).toBe("Hello Ilan");
+  });
 });
 
 describe("sendButtons", () => {
